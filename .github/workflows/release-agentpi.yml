@@ -1,0 +1,141 @@
+name: Release AgentPi
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Import signing certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          echo "$CERTIFICATE_BASE64" | base64 --decode > $RUNNER_TEMP/certificate.p12
+          security import $RUNNER_TEMP/certificate.p12 -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security default-keychain -s $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH login.keychain
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+      - name: Build archive
+        run: |
+          xcodebuild -project external/AgentPi/app/AgentPi.xcodeproj \
+            -scheme AgentPi \
+            -configuration Release \
+            -archivePath external/AgentPi/build/AgentPi.xcarchive \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM=${{ secrets.TEAM_ID }} \
+            archive
+
+      - name: Export app
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath external/AgentPi/build/AgentPi.xcarchive \
+            -exportPath external/AgentPi/build \
+            -exportOptionsPlist external/AgentPi/app/ExportOptions.plist
+
+      - name: Notarize app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+        run: |
+          ditto -c -k --keepParent external/AgentPi/build/AgentPi.app external/AgentPi/build/AgentPi.zip
+          xcrun notarytool submit external/AgentPi/build/AgentPi.zip \
+            --apple-id "$APPLE_ID" \
+            --team-id "$TEAM_ID" \
+            --password "$APP_PASSWORD" \
+            --wait
+          xcrun stapler staple external/AgentPi/build/AgentPi.app
+
+      - name: Build update zip
+        run: |
+          cd external/AgentPi/build
+          rm -f AgentPi.zip
+          ditto -c -k --keepParent AgentPi.app AgentPi.app.zip
+          stat -f%z AgentPi.app.zip > AgentPi.app.zip.size
+
+      - name: Generate Sparkle signature
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+            echo "SPARKLE_PRIVATE_KEY not set. Skipping Sparkle signature."
+            exit 0
+          fi
+          SIGN_UPDATE=$(find ~/Library/Developer/Xcode/DerivedData -name sign_update -type f 2>/dev/null | head -1)
+          if [ -n "$SIGN_UPDATE" ]; then
+            echo "$SPARKLE_PRIVATE_KEY" | "$SIGN_UPDATE" external/AgentPi/build/AgentPi.app.zip --ed-key-file - > external/AgentPi/build/sparkle-signature.txt
+          else
+            echo "sign_update not found. Skipping Sparkle signature."
+          fi
+
+      - name: Create DMG
+        run: |
+          create-dmg \
+            --volname "AgentPi" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "AgentPi.app" 150 185 \
+            --app-drop-link 450 185 \
+            --hide-extension "AgentPi.app" \
+            external/AgentPi/build/AgentPi.dmg \
+            external/AgentPi/build/AgentPi.app
+
+      - name: Notarize DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+        run: |
+          xcrun notarytool submit external/AgentPi/build/AgentPi.dmg \
+            --apple-id "$APPLE_ID" \
+            --team-id "$TEAM_ID" \
+            --password "$APP_PASSWORD" \
+            --wait
+          xcrun stapler staple external/AgentPi/build/AgentPi.dmg
+
+      - name: Generate checksums
+        run: |
+          cd external/AgentPi/build
+          shasum -a 256 AgentPi.dmg > AgentPi.dmg.sha256
+          shasum -a 256 AgentPi.app.zip > AgentPi.app.zip.sha256
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            external/AgentPi/build/AgentPi.dmg
+            external/AgentPi/build/AgentPi.dmg.sha256
+            external/AgentPi/build/AgentPi.app.zip
+            external/AgentPi/build/AgentPi.app.zip.sha256
+            external/AgentPi/build/sparkle-signature.txt
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
