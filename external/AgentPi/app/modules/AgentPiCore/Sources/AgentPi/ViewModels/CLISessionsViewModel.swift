@@ -252,12 +252,17 @@ public final class CLISessionsViewModel {
     isDark: Bool = true,
     dangerouslySkipPermissions: Bool = false
   ) -> TerminalContainerView {
+    let promptFromPendingQueue = initialPrompt.flatMap { prompt in
+      pendingTerminalPrompts[key] == prompt ? prompt : nil
+    }
+
     if let existing = activeTerminals[key] {
       #if DEBUG
       AppLogger.session.debug("[Terminal] REUSING existing terminal for key: \(key, privacy: .public)")
       #endif
-      // Send prompt to existing terminal if provided
-      if let prompt = initialPrompt {
+      // Only deliver prompts that were explicitly queued by showTerminalWithPrompt.
+      // Pending-card initial prompts are startup-only and must not be replayed on view remounts.
+      if let prompt = promptFromPendingQueue {
         // Reset the delivery flag so this new prompt can be sent
         existing.resetPromptDeliveryFlag()
         existing.sendPromptIfNeeded(prompt)
@@ -273,13 +278,14 @@ public final class CLISessionsViewModel {
     AppLogger.session.debug("[Terminal] CREATING new terminal for key: \(key, privacy: .public)")
     #endif
     let terminal = TerminalContainerView()
+    let startupPrompt = promptFromPendingQueue == nil ? initialPrompt : nil
     let config = cliConfiguration ?? self.currentCLIConfiguration
     terminal.configure(
       sessionId: sessionId,
       sessionFilePath: sessionFilePath,
       projectPath: projectPath,
       cliConfiguration: config,
-      initialPrompt: initialPrompt,
+      initialPrompt: startupPrompt,
       initialInputText: initialInputText,
       isDark: isDark,
       dangerouslySkipPermissions: dangerouslySkipPermissions
