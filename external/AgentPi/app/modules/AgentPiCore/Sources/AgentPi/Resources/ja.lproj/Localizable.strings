@@ -217,6 +217,7 @@
 "launch.disabled.select_repo" = "先にリポジトリを選択してください";
 "launch.disabled.worktree_branch_load_failed" = "worktree モードのブランチ読み込みに失敗しました";
 "launch.error.continue_wait_30s" = "さらに待機（+30秒）";
+"launch.error.branch_load_failed_repo" = "%@ のブランチを読み込めません。選択したフォルダが Git リポジトリであることを確認してください。";
 "launch.error.invalid_repo" = "選択したフォルダは Git リポジトリではありません。";
 "launch.error.no_launchable_agents" = "起動可能なエージェントがありません。少なくとも1つの CLI をインストールして再試行してください。";
 "launch.error.retry" = "再試行";

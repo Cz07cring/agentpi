@@ -276,7 +276,9 @@ public final class MultiSessionLaunchViewModel {
     guard isActiveLaunchAttempt(attemptId) else { return }
     isLaunching = false
     onLaunchCompleted?()
-    if launchError == nil || !preserveFormOnFailure {
+    if launchError == nil {
+      reset(clearLaunchOutcome: false)
+    } else if !preserveFormOnFailure {
       reset()
     }
   }
@@ -858,7 +860,7 @@ public final class MultiSessionLaunchViewModel {
   }
 
   /// Fully resets all form state for a fresh start
-  public func reset() {
+  public func reset(clearLaunchOutcome: Bool = true) {
     for file in attachedFiles where file.isTemporary {
       try? FileManager.default.removeItem(at: file.url)
     }
@@ -882,8 +884,10 @@ public final class MultiSessionLaunchViewModel {
     codexProgress = .idle
     piProgress = .idle
     launchError = nil
-    lastLaunchedProviders = []
-    lastSkippedProviders = []
+    if clearLaunchOutcome {
+      lastLaunchedProviders = []
+      lastSkippedProviders = []
+    }
     smartPhase = .idle
     smartProvider = .claude
     smartPlanText = ""

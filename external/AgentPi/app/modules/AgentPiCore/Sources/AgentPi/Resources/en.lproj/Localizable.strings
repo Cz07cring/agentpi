@@ -217,6 +217,7 @@
 "launch.disabled.select_repo" = "Please select a repository first";
 "launch.disabled.worktree_branch_load_failed" = "Failed to load branches for worktree mode";
 "launch.error.continue_wait_30s" = "Continue Wait (+30s)";
+"launch.error.branch_load_failed_repo" = "Unable to load branches for %@. Make sure the selected folder is a git repository.";
 "launch.error.invalid_repo" = "Selected folder is not a git repository.";
 "launch.error.no_launchable_agents" = "No launchable agents. Install at least one CLI and try again.";
 "launch.error.retry" = "Retry";

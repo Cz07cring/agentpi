@@ -86,14 +86,10 @@ public struct CLIDetectionService {
     let executableFound = detectExecutable(provider: provider, additionalPaths: additionalPaths)
     let hasDataDirectory = detectDataDirectory(provider: provider)
 
-    let status: AvailabilityStatus
-    if executableFound {
-      status = .available
-    } else if hasDataDirectory {
-      status = .misconfigured
-    } else {
-      status = .missing
-    }
+    let status = availabilityStatus(
+      isExecutableFound: executableFound,
+      hasDataDirectory: hasDataDirectory
+    )
 
     return ProviderAvailability(
       provider: provider,
@@ -109,6 +105,19 @@ public struct CLIDetectionService {
     additionalPaths: [String]? = nil
   ) -> [ProviderAvailability] {
     providers.map { detectProviderAvailability(provider: $0, additionalPaths: additionalPaths) }
+  }
+
+  static func availabilityStatus(
+    isExecutableFound: Bool,
+    hasDataDirectory: Bool
+  ) -> AvailabilityStatus {
+    if isExecutableFound {
+      return .available
+    }
+    if hasDataDirectory {
+      return .misconfigured
+    }
+    return .missing
   }
 
   /// Detects which CLI tools are installed

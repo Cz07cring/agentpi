@@ -58,8 +58,7 @@ for locale in "${LOCALES[@]}"; do
 done
 
 used_keys_file="$tmpdir/used.keys"
-rg --multiline --multiline-dotall --no-filename -o -P 'L10n\.(?:t|f)\(\s*"([^"]+)"' "$SOURCE_ROOT" -g '*.swift' \
-  | sed -E 's/.*L10n\.(t|f)\([[:space:]]*"([^"]+)".*/\2/' \
+rg --multiline --multiline-dotall --no-filename -o -P 'L10n\.(?:t|f)\(\s*"([^"]+)"' "$SOURCE_ROOT" -g '*.swift' -r '$1' \
   | LC_ALL=C sort -u > "$used_keys_file"
 
 missing_in_base="$tmpdir/base.missing_from_source"

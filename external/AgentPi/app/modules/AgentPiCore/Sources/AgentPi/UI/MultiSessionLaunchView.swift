@@ -1477,14 +1477,42 @@ public struct MultiSessionLaunchView: View {
       }
 
       if let skippedMessage = skippedLaunchMessage, !viewModel.isLaunching {
-        HStack(spacing: 4) {
-          Image(systemName: "arrow.triangle.branch")
-            .font(.system(size: 10))
-            .foregroundColor(.secondary)
-          Text(skippedMessage)
-            .font(.system(size: 10))
-            .foregroundColor(.secondary)
-            .lineLimit(2)
+        VStack(alignment: .trailing, spacing: 4) {
+          HStack(spacing: 4) {
+            Image(systemName: "arrow.triangle.branch")
+              .font(.system(size: 10))
+              .foregroundColor(.secondary)
+            Text(skippedMessage)
+              .font(.system(size: 10))
+              .foregroundColor(.secondary)
+              .lineLimit(2)
+          }
+
+          HStack(spacing: 8) {
+            Button(L10n.t("launch.action.open_settings", "Open Settings")) {
+              openSettings()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 10, weight: .medium))
+
+            if viewModel.lastSkippedProviders.count == 1, let provider = viewModel.lastSkippedProviders.first {
+              Button(L10n.t("launch.action.install_guide", "Install Guide")) {
+                openInstallGuide(for: provider)
+              }
+              .buttonStyle(.plain)
+              .font(.system(size: 10, weight: .medium))
+            } else {
+              Menu(L10n.t("launch.action.install_guide", "Install Guide")) {
+                ForEach(viewModel.lastSkippedProviders, id: \.self) { provider in
+                  Button(provider.rawValue) {
+                    openInstallGuide(for: provider)
+                  }
+                }
+              }
+              .font(.system(size: 10, weight: .medium))
+            }
+          }
+          .foregroundColor(.brandPrimary)
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
       }

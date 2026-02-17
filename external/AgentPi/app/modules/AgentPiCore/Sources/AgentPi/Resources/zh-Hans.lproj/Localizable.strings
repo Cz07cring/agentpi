@@ -217,6 +217,7 @@
 "launch.disabled.select_repo" = "请先选择仓库";
 "launch.disabled.worktree_branch_load_failed" = "worktree 模式分支加载失败";
 "launch.error.continue_wait_30s" = "继续等待（+30秒）";
+"launch.error.branch_load_failed_repo" = "无法加载 %@ 的分支。请确认所选文件夹是 Git 仓库。";
 "launch.error.invalid_repo" = "所选文件夹不是 Git 仓库。";
 "launch.error.no_launchable_agents" = "没有可启动的 Agent。请至少安装一个 CLI 后重试。";
 "launch.error.retry" = "重试";

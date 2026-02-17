@@ -126,8 +126,34 @@ struct LaunchCopyResolverSnapshotTests {
     }
   }
 
-  @Test("en: missing cli snapshot")
-  func englishMissingCLISnapshot() {
+  @Test("en: partial launch with one missing cli snapshot")
+  func englishPartialLaunchWithMissingCLISnapshot() {
+    withLanguage("en") {
+      let state = LaunchCopyState(
+        launchMode: .manual,
+        workMode: .local,
+        claudeMode: .enabled,
+        isCodexSelected: true,
+        isPiSelected: true,
+        hasRepository: true,
+        launchableProviderLabels: ["Claude", "Codex"],
+        missingProviderLabels: ["AgentPi"]
+      )
+
+      let snapshot = snapshotText(for: state)
+      #expect(snapshot == """
+      placeholder=Optional: initial prompt shared by 3 sessions...
+      selection=Selected 3 agents: Claude, Codex, AgentPi
+      badge=true
+      worktreeHint=nil
+      disabled=nil
+      button=Launch 2 Agents (Skip 1)
+      """)
+    }
+  }
+
+  @Test("en: all selected agents missing cli snapshot")
+  func englishAllMissingCLISnapshot() {
     withLanguage("en") {
       let state = LaunchCopyState(
         launchMode: .manual,
@@ -136,6 +162,7 @@ struct LaunchCopyResolverSnapshotTests {
         isCodexSelected: true,
         isPiSelected: false,
         hasRepository: true,
+        launchableProviderLabels: [],
         missingProviderLabels: ["Codex"]
       )
 
@@ -145,8 +172,8 @@ struct LaunchCopyResolverSnapshotTests {
       selection=Selected 1 agents: Codex
       badge=false
       worktreeHint=nil
-      disabled=Install Codex CLI to continue
-      button=Launch Codex
+      disabled=No launchable agents. Install at least one selected CLI
+      button=Launch
       """)
     }
   }

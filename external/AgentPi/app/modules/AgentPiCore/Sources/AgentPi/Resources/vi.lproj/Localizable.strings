@@ -217,6 +217,7 @@
 "launch.disabled.select_repo" = "Vui lòng chọn kho trước";
 "launch.disabled.worktree_branch_load_failed" = "Không tải được nhánh cho chế độ worktree";
 "launch.error.continue_wait_30s" = "Tiếp tục chờ (+30s)";
+"launch.error.branch_load_failed_repo" = "Không thể tải nhánh cho %@. Hãy chắc chắn thư mục đã chọn là kho Git.";
 "launch.error.invalid_repo" = "Thư mục đã chọn không phải kho Git.";
 "launch.error.no_launchable_agents" = "Không có agent nào có thể khởi chạy. Hãy cài ít nhất một CLI rồi thử lại.";
 "launch.error.retry" = "Thử lại";
