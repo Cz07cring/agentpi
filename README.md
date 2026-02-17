@@ -1,10 +1,12 @@
 <div align="center">
 
+**[English](README.md)** | **[中文](README.zh-CN.md)**
+
 # AgentPi
 
 ### The Mission Control for Your AI Coding Agents
 
-A local-first platform for monitoring and orchestrating Claude Code & Codex CLI sessions in real-time.
+A local-first platform for monitoring and orchestrating Claude Code, Codex CLI & [pi-mono](https://github.com/badlogic/pi-mono) sessions in real-time.
 Native macOS client + local daemon. Zero data leaves your machine.
 
 [![CI](https://github.com/Cz07cring/agentpi/actions/workflows/ci.yml/badge.svg)](https://github.com/Cz07cring/agentpi/actions/workflows/ci.yml)
@@ -43,7 +45,7 @@ Watch all active sessions update live via kqueue file-system watchers. No pollin
 <td width="50%" valign="top">
 
 **Multi-Provider, Multi-Session**
-Run Claude Code and Codex sessions side by side. Launch parallel agents across providers with manual prompts or AI-planned orchestration (Smart mode).
+Run Claude Code, Codex, and [pi-mono](https://github.com/badlogic/pi-mono) sessions side by side. Launch parallel agents across providers with manual prompts or AI-planned orchestration (Smart mode).
 
 </td>
 </tr>
@@ -386,6 +388,14 @@ agentpi/
 | **Auto-Updates** | Sparkle (EdDSA) |
 | **Testing** | Vitest, XCTest |
 | **CI/CD** | GitHub Actions |
+
+<br />
+
+## pi-mono Compatibility
+
+AgentPi is compatible with [pi-mono](https://github.com/badlogic/pi-mono) — an open-source AI agent toolkit by [@badlogic](https://github.com/badlogic) that includes a coding agent CLI, unified multi-provider LLM API, TUI/Web UI libraries, and more.
+
+AgentPi can monitor and manage pi-mono coding agent sessions alongside Claude Code and Codex, giving you a single hub for all your AI coding agents regardless of provider.
 
 <br />
 
