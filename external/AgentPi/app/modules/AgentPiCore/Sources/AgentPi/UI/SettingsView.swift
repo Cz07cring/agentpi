@@ -333,9 +333,24 @@ public struct SettingsView: View {
     }
     .formStyle(.grouped)
     .frame(width: 300, height: 500)
+    .onAppear {
+      applyProxyDefaultsIfEmpty()
+    }
     .task {
       await ensureSupportedThemeSelection()
     }
+  }
+
+  private func applyProxyDefaultsIfEmpty() {
+    let httpEmpty = proxyHTTP.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let httpsEmpty = proxyHTTPS.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let allEmpty = proxyALL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let noEmpty = proxyNO.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    guard httpEmpty && httpsEmpty && allEmpty && noEmpty else { return }
+    proxyHTTP = AgentPiDefaults.defaultProxyHTTP
+    proxyHTTPS = AgentPiDefaults.defaultProxyHTTPS
+    proxyALL = AgentPiDefaults.defaultProxyALL
+    proxyNO = AgentPiDefaults.defaultProxyNO
   }
 
   private var themeSelectionBinding: Binding<String> {
