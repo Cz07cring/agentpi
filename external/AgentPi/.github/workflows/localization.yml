@@ -1,0 +1,20 @@
+name: Localization Check
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  check-localization:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate localization keys
+        run: ./scripts/check-localization-keys.sh
+
+      - name: Validate core UI localization usage
+        run: ./scripts/check-core-ui-hardcoded-text.sh

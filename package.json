@@ -1,0 +1,31 @@
+{
+  "name": "agentpi-platform",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev": "npm run dev -w @agentpi/daemon",
+    "dev:doctor": "node ./scripts/dev-doctor.mjs",
+    "mac:build": "./scripts/build-agentpi-mac.sh",
+    "mac:open": "./scripts/open-agentpi-mac.sh",
+    "test": "npm run test --workspaces --if-present",
+    "test:release-gate": "npm run typecheck && npm test && npm run mac:build && npm run build",
+    "typecheck": "npm run build -w @agentpi/protocol && npm run typecheck --workspaces --if-present",
+    "mac:seed-demo": "./scripts/seed-agentpi-demo.sh",
+    "mac:demo": "npm run mac:seed-demo && npm run mac:open"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

@@ -1,0 +1,17 @@
+node_modules
+npm-debug.log*
+dist*
+coverage
+.vite
+.DS_Store
+*.log
+*.tsbuildinfo
+apps/daemon/data
+output
+.build-macos
+apps/daemon/apps
+external/AgentPi/app/modules/AgentPiCore/.build
+external/AgentPi/app/modules/AgentPiCore/.swiftpm
+*.db
+.playwright-cli
+.pi

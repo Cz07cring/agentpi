@@ -1,0 +1,393 @@
+//  Color+Extension.swift
+//  AgentPi
+//
+//  Created by James Rochabrun on 6/8/25.
+
+import SwiftUI
+import AppKit
+
+// MARK: - Design Tokens
+
+public enum DesignTokens {
+  public enum Spacing {
+    public static let xs: CGFloat = 4
+    public static let sm: CGFloat = 8
+    public static let md: CGFloat = 12
+    public static let lg: CGFloat = 16
+    public static let xl: CGFloat = 20
+  }
+
+  public enum Radius {
+    public static let sm: CGFloat = 6
+    public static let md: CGFloat = 10
+    public static let lg: CGFloat = 14
+  }
+
+  public enum StatusSize {
+    public static let sm: CGFloat = 8
+    public static let md: CGFloat = 10
+  }
+
+  public enum IconSize {
+    public static let sm: CGFloat = 12
+    public static let md: CGFloat = 14
+    public static let lg: CGFloat = 16
+  }
+}
+
+/// Available app themes
+public enum AppTheme: String, CaseIterable, Identifiable {
+  case claude = "claude"
+  case codex = "codex"
+  case bat = "bat"
+  case xcode = "Blue"
+  case custom = "custom"
+
+  public var id: String { rawValue }
+
+  public var displayName: String {
+    switch self {
+    case .claude: return "Claude"
+    case .codex: return "Codex"
+    case .bat: return "Bat"
+    case .xcode: return "Blue"
+    case .custom: return "Custom"
+    }
+  }
+
+  public var description: String {
+    switch self {
+    case .claude: return "Warm earth tones"
+    case .codex: return "Teal and purple"
+    case .bat: return "Purple with mustard accents"
+    case .xcode: return "Cool blues"
+    case .custom: return "User-defined colors"
+    }
+  }
+}
+
+/// Theme color definitions
+public struct ThemeColors {
+  public let brandPrimary: Color
+  public let brandSecondary: Color
+  public let brandTertiary: Color
+
+  public init(brandPrimary: Color, brandSecondary: Color, brandTertiary: Color) {
+    self.brandPrimary = brandPrimary
+    self.brandSecondary = brandSecondary
+    self.brandTertiary = brandTertiary
+  }
+}
+
+extension Color {
+  /// Create a Color from 0...255 RGB values (and optional alpha)
+  init(red: Double, green: Double, blue: Double, alpha: Double = 1.0) {
+    self.init(.sRGB,
+              red: red / 255.0,
+              green: green / 255.0,
+              blue: blue / 255.0,
+              opacity: alpha)
+  }
+
+  init(red: Int, green: Int, blue: Int, alpha: Double = 1.0) {
+    self.init(red: Double(red), green: Double(green), blue: Double(blue), alpha: alpha)
+  }
+
+  /// Create a Color from a hex string like "#CC785C" or "CC785C"
+  init(hex: String, alpha: Double = 1.0) {
+    let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+    var int = UInt64()
+    Scanner(string: hex).scanHexInt64(&int)
+
+    let r, g, b: UInt64
+    switch hex.count {
+    case 6: // RGB (24-bit)
+      (r, g, b) = ((int >> 16) & 0xFF, (int >> 8) & 0xFF, int & 0xFF)
+    default:
+      (r, g, b) = (0, 0, 0)
+    }
+
+    self.init(red: Int(r), green: Int(g), blue: Int(b), alpha: alpha)
+  }
+
+  // MARK: - Named Colors (Legacy - use brand colors instead)
+
+  static let bookCloth = Color(hex: "#CC785C")
+  static let kraft = Color(hex: "#D4A27F")
+  static let manilla = Color(hex: "#EBDBBC")
+
+  // MARK: - Theme-Aware Brand Colors
+
+  public static var brandPrimary: Color {
+    getCurrentThemeColors().brandPrimary
+  }
+
+  public static var brandSecondary: Color {
+    getCurrentThemeColors().brandSecondary
+  }
+
+  public static var brandTertiary: Color {
+    getCurrentThemeColors().brandTertiary
+  }
+
+  // MARK: - Runtime Theme Support
+
+  /// Get brand colors from runtime theme or fallback to UserDefaults
+  public static func brandPrimary(from theme: RuntimeTheme?) -> Color {
+    theme?.brandPrimary ?? brandPrimary
+  }
+
+  public static func brandSecondary(from theme: RuntimeTheme?) -> Color {
+    theme?.brandSecondary ?? brandSecondary
+  }
+
+  public static func brandTertiary(from theme: RuntimeTheme?) -> Color {
+    theme?.brandTertiary ?? brandTertiary
+  }
+
+  // MARK: - Provider-Aware Colors
+
+  public static func brandPrimary(for provider: SessionProviderKind) -> Color {
+    if let yamlProviderColor = yamlProviderPrimaryColor(for: provider) {
+      return yamlProviderColor
+    }
+
+    switch provider {
+    case .claude:
+      return Color(hex: "#CC785C")  // bookCloth
+    case .codex:
+      return Color(hex: "#00A5B2")  // teal
+    case .pi:
+      return Color(hex: "#22C55E")  // green
+    }
+  }
+
+  public static func brandSecondary(for provider: SessionProviderKind) -> Color {
+    switch provider {
+    case .claude:
+      return Color(hex: "#D4A27F")  // kraft
+    case .codex:
+      return Color(hex: "#00A5B2")  // teal (same as primary)
+    case .pi:
+      return Color(hex: "#22C55E")  // green (same as primary)
+    }
+  }
+
+  public static func brandTertiary(for provider: SessionProviderKind) -> Color {
+    switch provider {
+    case .claude:
+      return Color(hex: "#EBDBBC")  // manilla
+    case .codex:
+      return Color(hex: "#00A5B2")  // teal (same as primary)
+    case .pi:
+      return Color(hex: "#22C55E")  // green (same as primary)
+    }
+  }
+
+  // MARK: - Theme Colors Helper
+
+  private static func getCurrentThemeColors() -> ThemeColors {
+    let selectedTheme = UserDefaults.standard.string(forKey: AgentPiDefaults.selectedTheme) ?? "claude"
+    guard let theme = AppTheme(rawValue: selectedTheme) else {
+      // YAML theme — read cached hex values
+      let yamlPrimary = UserDefaults.standard.string(forKey: AgentPiDefaults.yamlPrimaryHex) ?? "#CC785C"
+      let yamlSecondary = UserDefaults.standard.string(forKey: AgentPiDefaults.yamlSecondaryHex) ?? "#D4A27F"
+      let yamlTertiary = UserDefaults.standard.string(forKey: AgentPiDefaults.yamlTertiaryHex) ?? "#EBDBBC"
+      return ThemeColors(
+        brandPrimary: Color(hex: yamlPrimary),
+        brandSecondary: Color(hex: yamlSecondary),
+        brandTertiary: Color(hex: yamlTertiary)
+      )
+    }
+
+    // Delegate to ThemeManager as single source of truth for built-in themes
+    return ThemeManager.getThemeColors(for: theme)
+  }
+
+  private static func yamlProviderPrimaryColor(for provider: SessionProviderKind) -> Color? {
+    guard isYAMLThemeSelected else { return nil }
+
+    let claudePrimary = UserDefaults.standard.string(forKey: AgentPiDefaults.yamlPrimaryHex)
+    let sentryLightCodex = UserDefaults.standard.string(forKey: AgentPiDefaults.yamlSecondaryHex) ?? "#362D59"
+    let sentryDarkCodex = UserDefaults.standard.string(forKey: AgentPiDefaults.yamlTertiaryHex) ?? "#584774"
+    let codexPrimary: String? = {
+      if isSentryYAMLSelected {
+        return sentryDarkCodex
+      }
+      return UserDefaults.standard.string(forKey: AgentPiDefaults.yamlSecondaryHex)
+    }()
+
+    switch provider {
+    case .claude:
+      guard let claudePrimary else { return nil }
+      return Color(hex: claudePrimary)
+    case .codex:
+      if isSentryYAMLSelected {
+        let dynamicCodex = NSColor(name: nil) { appearance in
+          let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+          return NSColor.fromHex(isDark ? sentryDarkCodex : sentryLightCodex)
+        }
+        return Color(nsColor: dynamicCodex)
+      }
+      guard let codexPrimary else { return nil }
+      return Color(hex: codexPrimary)
+    case .pi:
+      if isSentryYAMLSelected {
+        let dynamicPi = NSColor(name: nil) { appearance in
+          let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+          return NSColor.fromHex(isDark ? sentryDarkCodex : sentryLightCodex)
+        }
+        return Color(nsColor: dynamicPi)
+      }
+      guard let codexPrimary else { return nil }
+      return Color(hex: codexPrimary)
+    }
+  }
+
+  private static var isYAMLThemeSelected: Bool {
+    let selectedTheme = UserDefaults.standard.string(forKey: AgentPiDefaults.selectedTheme) ?? "claude"
+    return AppTheme(rawValue: selectedTheme) == nil
+  }
+
+  private static var isSentryYAMLSelected: Bool {
+    let selectedTheme = (UserDefaults.standard.string(forKey: AgentPiDefaults.selectedTheme) ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    return selectedTheme == "sentry.yaml" || selectedTheme == "sentry.yml"
+  }
+
+  static let backgroundDark = Color(hex: "#262624")
+  static let backgroundLight = Color(hex: "#FAF9F5")
+  static let expandedContentBackgroundDark = Color(hex: "#1F2421")
+  static let expandedContentBackgroundLight = Color.white//(hex: "#F8F4E3")
+
+  // MARK: - Surface Colors (for depth hierarchy)
+
+  public static var surfaceCanvas: Color {
+    Color(nsColor: .windowBackgroundColor)
+  }
+
+  public static var surfacePanel: Color {
+    Color(nsColor: .controlBackgroundColor)
+  }
+
+  public static var surfaceCard: Color {
+    Color(nsColor: .textBackgroundColor)
+  }
+
+  public static var surfaceStroke: Color {
+    Color(nsColor: .separatorColor)
+  }
+
+  public static var surfaceElevated: Color {
+    Color(nsColor: .controlBackgroundColor)
+  }
+
+  public static var surfaceOverlay: Color {
+    Color.gray.opacity(0.06)    
+  }
+
+  public static var surfaceHover: Color {
+    Color.gray.opacity(0.10)
+  }
+
+  public static var borderSubtle: Color {
+      Color.primary.opacity(0.85)
+  }
+
+  public static var flatCardBackground: Color {
+    Color(nsColor: .windowBackgroundColor)
+  }
+
+  // MARK: - Theme-Aware Background Gradient
+
+  public static var backgroundGradient: LinearGradient {
+    LinearGradient(
+      colors: [
+        brandPrimary.opacity(0.08),
+        brandSecondary.opacity(0.04),
+        Color.clear
+      ],
+      startPoint: .topLeading,
+      endPoint: .bottomTrailing
+    )
+  }
+
+  public static func backgroundGradient(from theme: RuntimeTheme?) -> LinearGradient {
+    theme?.backgroundGradient ?? backgroundGradient
+  }
+
+  // MARK: - Adaptive Colors
+
+  static func adaptiveBackground(for colorScheme: ColorScheme) -> Color {
+    colorScheme == .dark ? backgroundDark : backgroundLight
+  }
+
+  static func adaptiveExpandedContentBackground(for colorScheme: ColorScheme) -> Color {
+    colorScheme == .dark ? expandedContentBackgroundDark : expandedContentBackgroundLight
+  }
+
+  public static func adaptiveBackground(for colorScheme: ColorScheme, theme: RuntimeTheme?) -> Color {
+    if let theme = theme {
+      if colorScheme == .dark, let dark = theme.backgroundDark {
+        return dark
+      } else if colorScheme == .light, let light = theme.backgroundLight {
+        return light
+      }
+    }
+    return adaptiveBackground(for: colorScheme)
+  }
+
+  public static func adaptiveExpandedContentBackground(for colorScheme: ColorScheme, theme: RuntimeTheme?) -> Color {
+    if let theme = theme {
+      if colorScheme == .dark, let dark = theme.expandedContentBackgroundDark {
+        return dark
+      } else if colorScheme == .light, let light = theme.expandedContentBackgroundLight {
+        return light
+      }
+    }
+    return adaptiveExpandedContentBackground(for: colorScheme)
+  }
+
+  public static var isSentryThemeSelectedStrict: Bool {
+    isSentryYAMLSelected
+  }
+
+}
+
+// MARK: - Hex <-> NSColor Bridging
+extension Color {
+  /// Convert an NSColor to a hex string like #RRGGBB
+  static func hexString(from nsColor: NSColor) -> String {
+    let color = nsColor.usingColorSpace(.sRGB) ?? nsColor
+    let r = Int(round(color.redComponent * 255))
+    let g = Int(round(color.greenComponent * 255))
+    let b = Int(round(color.blueComponent * 255))
+    return String(format: "#%02X%02X%02X", r, g, b)
+  }
+}
+
+extension NSColor {
+  /// Create an NSColor from a hex string like #RRGGBB
+  static func fromHex(_ hex: String) -> NSColor {
+    let cleaned = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+    var int = UInt64()
+    Scanner(string: cleaned).scanHexInt64(&int)
+    let r, g, b: UInt64
+    switch cleaned.count {
+    case 6:
+      (r, g, b) = ((int >> 16) & 0xFF, (int >> 8) & 0xFF, int & 0xFF)
+    default:
+      (r, g, b) = (124, 58, 237) // fallback purple
+    }
+    return NSColor(srgbRed: CGFloat(r) / 255.0,
+                   green: CGFloat(g) / 255.0,
+                   blue: CGFloat(b) / 255.0,
+                   alpha: 1.0)
+  }
+
+  /// Hex string like #RRGGBB
+  func toHexString() -> String {
+    Color.hexString(from: self)
+  }
+}
