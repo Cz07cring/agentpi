@@ -42,6 +42,21 @@ public struct SettingsView: View {
   @AppStorage(AgentPiDefaults.notificationSoundsEnabled)
   private var notificationSoundsEnabled: Bool = true
 
+  @AppStorage(AgentPiDefaults.proxyEnabled)
+  private var proxyEnabled: Bool = false
+
+  @AppStorage(AgentPiDefaults.proxyHTTP)
+  private var proxyHTTP: String = ""
+
+  @AppStorage(AgentPiDefaults.proxyHTTPS)
+  private var proxyHTTPS: String = ""
+
+  @AppStorage(AgentPiDefaults.proxyALL)
+  private var proxyALL: String = ""
+
+  @AppStorage(AgentPiDefaults.proxyNO)
+  private var proxyNO: String = ""
+
   @AppStorage(AgentPiDefaults.claudeCommand)
   private var claudeCommand: String = "claude"
 
@@ -216,6 +231,49 @@ public struct SettingsView: View {
               .foregroundColor(.secondary)
           }
         }
+      }
+
+      Section(L10n.t("settings.network.section", "Network")) {
+        Toggle(isOn: $proxyEnabled) {
+          VStack(alignment: .leading, spacing: 2) {
+            Text(L10n.t("settings.network.proxy.enable", "Enable proxy for CLI sessions"))
+            Text(L10n.t("settings.network.proxy.enable.subtitle", "Inject HTTP/HTTPS/ALL_PROXY when launching Claude/Codex/AgentPi"))
+              .font(.caption)
+              .foregroundColor(.secondary)
+          }
+        }
+
+        TextField(
+          L10n.t("settings.network.proxy.http", "HTTP Proxy (http://127.0.0.1:7890)"),
+          text: $proxyHTTP
+        )
+        .textFieldStyle(.roundedBorder)
+        .disabled(!proxyEnabled)
+
+        TextField(
+          L10n.t("settings.network.proxy.https", "HTTPS Proxy (http://127.0.0.1:7890)"),
+          text: $proxyHTTPS
+        )
+        .textFieldStyle(.roundedBorder)
+        .disabled(!proxyEnabled)
+
+        TextField(
+          L10n.t("settings.network.proxy.all", "ALL_PROXY (socks5://127.0.0.1:7890)"),
+          text: $proxyALL
+        )
+        .textFieldStyle(.roundedBorder)
+        .disabled(!proxyEnabled)
+
+        TextField(
+          L10n.t("settings.network.proxy.no", "NO_PROXY (localhost,127.0.0.1)"),
+          text: $proxyNO
+        )
+        .textFieldStyle(.roundedBorder)
+        .disabled(!proxyEnabled)
+
+        Text(L10n.t("settings.network.proxy.note", "Restart active sessions after changing proxy settings."))
+          .font(.caption)
+          .foregroundColor(.secondary)
       }
 
       Section(L10n.t("settings.ux.section", "UX")) {

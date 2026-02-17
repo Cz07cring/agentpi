@@ -145,6 +145,28 @@ public enum AgentPiDefaults {
   /// Type: Int (default: 8)
   public static let maxLoadingWithoutFeedbackSeconds = "\(keyPrefix)ui.maxLoadingWithoutFeedback.seconds"
 
+  // MARK: - Network / Proxy
+
+  /// Whether custom proxy environment variables should be injected into CLI sessions.
+  /// Type: Bool (default: false)
+  public static let proxyEnabled = "\(keyPrefix)network.proxy.enabled"
+
+  /// HTTP proxy URL for CLI sessions.
+  /// Type: String (default: "")
+  public static let proxyHTTP = "\(keyPrefix)network.proxy.http"
+
+  /// HTTPS proxy URL for CLI sessions.
+  /// Type: String (default: "")
+  public static let proxyHTTPS = "\(keyPrefix)network.proxy.https"
+
+  /// ALL_PROXY value for CLI sessions (supports socks5://...)
+  /// Type: String (default: "")
+  public static let proxyALL = "\(keyPrefix)network.proxy.all"
+
+  /// NO_PROXY value for CLI sessions.
+  /// Type: String (default: "")
+  public static let proxyNO = "\(keyPrefix)network.proxy.no"
+
   // MARK: - Theme Settings
 
   /// Selected color theme name

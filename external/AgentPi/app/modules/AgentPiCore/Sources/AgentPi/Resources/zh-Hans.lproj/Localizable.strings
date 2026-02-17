@@ -273,3 +273,19 @@
 "monitoring.primary_action.help.open_terminal" = "打开终端继续该会话";
 "monitoring.primary_action.help.retry" = "刷新并重试终端状态";
 "monitoring.primary_action.help.add_files" = "发送下一条输入前先附加文件";
+
+"settings.network.section" = "网络";
+
+"settings.network.proxy.enable" = "为 CLI 会话启用代理";
+
+"settings.network.proxy.enable.subtitle" = "启动 Claude/Codex/AgentPi 时注入 HTTP/HTTPS/ALL_PROXY";
+
+"settings.network.proxy.http" = "HTTP 代理（http://127.0.0.1:7890）";
+
+"settings.network.proxy.https" = "HTTPS 代理（http://127.0.0.1:7890）";
+
+"settings.network.proxy.all" = "ALL_PROXY（socks5://127.0.0.1:7890）";
+
+"settings.network.proxy.no" = "NO_PROXY（localhost,127.0.0.1）";
+
+"settings.network.proxy.note" = "修改代理后请重启当前会话。";

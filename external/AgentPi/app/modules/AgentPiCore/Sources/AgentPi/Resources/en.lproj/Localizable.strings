@@ -273,3 +273,19 @@
 "monitoring.primary_action.help.open_terminal" = "Open terminal to continue this session";
 "monitoring.primary_action.help.retry" = "Refresh and retry terminal state";
 "monitoring.primary_action.help.add_files" = "Attach files before sending next input";
+
+"settings.network.section" = "Network";
+
+"settings.network.proxy.enable" = "Enable proxy for CLI sessions";
+
+"settings.network.proxy.enable.subtitle" = "Inject HTTP/HTTPS/ALL_PROXY when launching Claude/Codex/AgentPi";
+
+"settings.network.proxy.http" = "HTTP Proxy (http://127.0.0.1:7890)";
+
+"settings.network.proxy.https" = "HTTPS Proxy (http://127.0.0.1:7890)";
+
+"settings.network.proxy.all" = "ALL_PROXY (socks5://127.0.0.1:7890)";
+
+"settings.network.proxy.no" = "NO_PROXY (localhost,127.0.0.1)";
+
+"settings.network.proxy.note" = "Restart active sessions after changing proxy settings.";

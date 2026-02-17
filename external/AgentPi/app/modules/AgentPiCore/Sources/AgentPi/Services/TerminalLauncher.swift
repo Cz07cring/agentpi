@@ -61,6 +61,7 @@ public struct TerminalLauncher {
       } else {
         environment["PATH"] = additionalPaths
       }
+      ProxyEnvironment.apply(to: &environment)
       process.environment = environment
 
       let stdoutPipe = Pipe()
@@ -180,9 +181,10 @@ public struct TerminalLauncher {
     let scriptPath = (tempDir as NSString).appendingPathComponent("claude_resume_\(UUID().uuidString).command")
 
     // Create the script content
+    let proxyExports = ProxyEnvironment.shellExportSnippet()
     let scriptContent = """
     #!/bin/bash
-    \(command)
+    \(proxyExports)\(command)
     """
 
     do {
@@ -278,7 +280,7 @@ public struct TerminalLauncher {
 
     let scriptContent = """
     #!/bin/bash
-    \(command)
+    \(ProxyEnvironment.shellExportSnippet())\(command)
     """
 
     do {
@@ -361,7 +363,7 @@ public struct TerminalLauncher {
 
     let scriptContent = """
     #!/bin/bash
-    \(command)
+    \(ProxyEnvironment.shellExportSnippet())\(command)
     """
 
     do {

@@ -433,6 +433,8 @@ public class TerminalContainerView: NSView, ManagedLocalProcessTerminalViewDeleg
       environment["PATH"] = pathString
     }
 
+    ProxyEnvironment.apply(to: &environment)
+
     // Build the shell command with working directory
     // Since SwiftTerm's Mac API doesn't support currentDirectory directly,
     // we use bash -c to cd first then run claude
@@ -441,9 +443,13 @@ public class TerminalContainerView: NSView, ManagedLocalProcessTerminalViewDeleg
     let escapedCLIPath = executablePath.replacingOccurrences(of: "'", with: "'\\''")
 #if DEBUG
     let homeEnv = environment["HOME"] ?? "<nil>"
+    let proxyKeys = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"].filter { environment[$0] != nil }
     AppLogger.session.debug(
       "[ClaudeProcess] workingDirectory=\(workingDirectory, privacy: .public) homeEnv=\(homeEnv, privacy: .public) command=\(command, privacy: .public)"
     )
+    if !proxyKeys.isEmpty {
+      AppLogger.session.debug("[CLIProxy] injectedKeys=\(proxyKeys.joined(separator: ","), privacy: .public)")
+    }
     if isPiRuntime {
       AppLogger.session.debug(
         "[PiProcess] minimumPTYColumns=\(self.piMinimumColumns, privacy: .public) command=\(command, privacy: .public)"
