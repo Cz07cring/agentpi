@@ -46,16 +46,16 @@ public struct SettingsView: View {
   private var proxyEnabled: Bool = false
 
   @AppStorage(AgentPiDefaults.proxyHTTP)
-  private var proxyHTTP: String = ""
+  private var proxyHTTP: String = AgentPiDefaults.defaultProxyHTTP
 
   @AppStorage(AgentPiDefaults.proxyHTTPS)
-  private var proxyHTTPS: String = ""
+  private var proxyHTTPS: String = AgentPiDefaults.defaultProxyHTTPS
 
   @AppStorage(AgentPiDefaults.proxyALL)
-  private var proxyALL: String = ""
+  private var proxyALL: String = AgentPiDefaults.defaultProxyALL
 
   @AppStorage(AgentPiDefaults.proxyNO)
-  private var proxyNO: String = ""
+  private var proxyNO: String = AgentPiDefaults.defaultProxyNO
 
   @AppStorage(AgentPiDefaults.claudeCommand)
   private var claudeCommand: String = "claude"

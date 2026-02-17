@@ -52,33 +52,52 @@ public enum ProxyEnvironment {
   ) -> [String: String] {
     guard defaults.bool(forKey: AgentPiDefaults.proxyEnabled) else { return [:] }
 
+    let configuredHTTP = cleaned(defaults.string(forKey: AgentPiDefaults.proxyHTTP))
+    let configuredHTTPS = cleaned(defaults.string(forKey: AgentPiDefaults.proxyHTTPS))
+    let configuredALL = cleaned(defaults.string(forKey: AgentPiDefaults.proxyALL))
+    let envHTTP = cleaned(processEnvironment["HTTP_PROXY"] ?? processEnvironment["http_proxy"])
+    let envHTTPS = cleaned(processEnvironment["HTTPS_PROXY"] ?? processEnvironment["https_proxy"])
+    let envALL = cleaned(processEnvironment["ALL_PROXY"] ?? processEnvironment["all_proxy"])
+
     let http = configuredOrEnvironmentValue(
       defaults.string(forKey: AgentPiDefaults.proxyHTTP),
       upper: "HTTP_PROXY",
       lower: "http_proxy",
+      defaultValue: AgentPiDefaults.defaultProxyHTTP,
       processEnvironment: processEnvironment
     )
     var https = configuredOrEnvironmentValue(
       defaults.string(forKey: AgentPiDefaults.proxyHTTPS),
       upper: "HTTPS_PROXY",
       lower: "https_proxy",
+      defaultValue: "",
       processEnvironment: processEnvironment
     )
     var all = configuredOrEnvironmentValue(
       defaults.string(forKey: AgentPiDefaults.proxyALL),
       upper: "ALL_PROXY",
       lower: "all_proxy",
+      defaultValue: "",
       processEnvironment: processEnvironment
     )
     let no = configuredOrEnvironmentValue(
       defaults.string(forKey: AgentPiDefaults.proxyNO),
       upper: "NO_PROXY",
       lower: "no_proxy",
+      defaultValue: AgentPiDefaults.defaultProxyNO,
       processEnvironment: processEnvironment
     )
 
     if https.isEmpty { https = http }
-    if all.isEmpty { all = https.isEmpty ? http : https }
+    if all.isEmpty {
+      let hasExplicitOrEnvironmentProxy = !configuredHTTP.isEmpty || !configuredHTTPS.isEmpty || !configuredALL.isEmpty
+        || !envHTTP.isEmpty || !envHTTPS.isEmpty || !envALL.isEmpty
+      if hasExplicitOrEnvironmentProxy {
+        all = https.isEmpty ? http : https
+      } else {
+        all = AgentPiDefaults.defaultProxyALL
+      }
+    }
 
     if http.isEmpty && https.isEmpty && all.isEmpty && no.isEmpty {
       return [:]
@@ -117,12 +136,17 @@ public enum ProxyEnvironment {
     _ configured: String?,
     upper: String,
     lower: String,
+    defaultValue: String,
     processEnvironment: [String: String]
   ) -> String {
     let configuredValue = cleaned(configured)
     if !configuredValue.isEmpty {
       return configuredValue
     }
-    return cleaned(processEnvironment[upper] ?? processEnvironment[lower])
+    let environmentValue = cleaned(processEnvironment[upper] ?? processEnvironment[lower])
+    if !environmentValue.isEmpty {
+      return environmentValue
+    }
+    return cleaned(defaultValue)
   }
 }

@@ -151,20 +151,32 @@ public enum AgentPiDefaults {
   /// Type: Bool (default: false)
   public static let proxyEnabled = "\(keyPrefix)network.proxy.enabled"
 
+  /// Default HTTP proxy URL.
+  public static let defaultProxyHTTP = "http://127.0.0.1:7890"
+
+  /// Default HTTPS proxy URL.
+  public static let defaultProxyHTTPS = "http://127.0.0.1:7890"
+
+  /// Default ALL_PROXY value.
+  public static let defaultProxyALL = "socks5://127.0.0.1:7890"
+
+  /// Default NO_PROXY value.
+  public static let defaultProxyNO = "localhost,127.0.0.1"
+
   /// HTTP proxy URL for CLI sessions.
-  /// Type: String (default: "")
+  /// Type: String (default: "http://127.0.0.1:7890")
   public static let proxyHTTP = "\(keyPrefix)network.proxy.http"
 
   /// HTTPS proxy URL for CLI sessions.
-  /// Type: String (default: "")
+  /// Type: String (default: "http://127.0.0.1:7890")
   public static let proxyHTTPS = "\(keyPrefix)network.proxy.https"
 
   /// ALL_PROXY value for CLI sessions (supports socks5://...)
-  /// Type: String (default: "")
+  /// Type: String (default: "socks5://127.0.0.1:7890")
   public static let proxyALL = "\(keyPrefix)network.proxy.all"
 
   /// NO_PROXY value for CLI sessions.
-  /// Type: String (default: "")
+  /// Type: String (default: "localhost,127.0.0.1")
   public static let proxyNO = "\(keyPrefix)network.proxy.no"
 
   // MARK: - Theme Settings

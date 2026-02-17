@@ -52,6 +52,19 @@ struct ProxyEnvironmentTests {
     #expect(values["NO_PROXY"] == "localhost")
   }
 
+  @Test("enabled proxy uses built-in defaults when setting and env are empty")
+  func enabledUsesBuiltInDefaults() {
+    let defaults = makeDefaults()
+    defaults.set(true, forKey: AgentPiDefaults.proxyEnabled)
+
+    let values = ProxyEnvironment.resolvedValues(defaults: defaults, processEnvironment: [:])
+
+    #expect(values["HTTP_PROXY"] == AgentPiDefaults.defaultProxyHTTP)
+    #expect(values["HTTPS_PROXY"] == AgentPiDefaults.defaultProxyHTTPS)
+    #expect(values["ALL_PROXY"] == AgentPiDefaults.defaultProxyALL)
+    #expect(values["NO_PROXY"] == AgentPiDefaults.defaultProxyNO)
+  }
+
   @Test("shell export snippet quotes values safely")
   func shellExportSnippetEscapesSingleQuote() {
     let defaults = makeDefaults()
