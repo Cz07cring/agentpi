@@ -6,7 +6,7 @@
 
 ### AI 编程 Agent 的任务控制中心
 
-本地优先的 AI 开发协作平台，实时监控和编排 Claude Code、Codex CLI 与 [pi-mono](https://github.com/badlogic/pi-mono) 会话。
+实时监控和编排 Claude Code、Codex CLI 与 [pi-mono](https://github.com/badlogic/pi-mono) 会话。
 macOS 原生客户端 + 本地 Daemon。数据完全不出本机。
 
 [![CI](https://github.com/Cz07cring/agentpi/actions/workflows/ci.yml/badge.svg)](https://github.com/Cz07cring/agentpi/actions/workflows/ci.yml)
@@ -16,73 +16,31 @@ macOS 原生客户端 + 本地 Daemon。数据完全不出本机。
 [![Swift](https://img.shields.io/badge/Swift-6.0-F05138?logo=swift&logoColor=white)](https://swift.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
+<!-- TODO: 添加截图 — 例如 ![AgentPi Hub](docs/assets/hub-screenshot.png) -->
+
 </div>
+
+---
 
 ## 为什么选择 AgentPi？
 
-同时运行多个 AI 编程 Agent 是一件混乱的事情：你搞不清哪个 Agent 在干什么，上下文窗口悄悄用完，工具调用堆积等待审批，费用在不知不觉中飙升。
+同时运行多个 AI 编程 Agent 是一件混乱的事情——搞不清哪个 Agent 在干什么，上下文窗口悄悄用完，工具调用堆积等待审批，费用在不知不觉中飙升。
 
-**AgentPi 给你一个统一的驾驶舱。** 一个界面监控所有 Claude Code、Codex 和 pi-mono 会话，内联审查 diff，批准工具调用，并行启动多个 Agent，追踪 token 用量——所有代码和对话数据完全留在你的本机，绝不外传。
-
-## 核心亮点
-
-- **实时会话监控** — 通过 kqueue 文件系统监听器实时更新所有活跃会话。零轮询。状态、token 计数、工具活动、上下文窗口使用量一目了然。
-- **多供应商、多会话** — Claude Code、Codex 和 [pi-mono](https://github.com/badlogic/pi-mono) 会话并排运行。支持手动 prompt 或 AI 智能编排（Smart 模式）并行启动。
-- **内联 Diff 审查** — 完整的分栏 diff 视图，内置编辑器。审查代码变更并直接向 Claude 发送反馈，无需切换窗口。
-- **内嵌终端** — 每个会话卡片内置完整的 PTY 终端（SwiftTerm）。无需离开 App 即可恢复或启动会话。
-- **隐私优先** — 完全运行在你的本机。读取本地会话文件，仅通过 localhost 通信。无遥测、无云端、无追踪。
-- **工作流引擎** — 基于 DAG 的工作流执行，支持并行节点、条件分支、审批门控和安全的表达式求值。
-
-## 架构
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      macOS 原生客户端                         │
-│                  (Swift / SwiftUI / AppKit)                  │
-│                                                              │
-│  Hub 视图 · Diff 视图 · 终端 · 命令面板 · 设置               │
-│                          │                                   │
-│                CLISessionsViewModel                          │
-│                (@MainActor, Combine)                         │
-│                          │                                   │
-│    SessionFileWatcher · CodexFileWatcher · ThemeFileWatcher   │
-│    (kqueue + 字节偏移增量读取)                                │
-└──────────┬──────────────────────────────────────────────────┘
-           │
-  ~/.claude/projects/{path}/{id}.jsonl
-  ~/.codex/sessions/{date}/{id}.jsonl
-           │
-           │  HTTP + WebSocket (localhost:43210)
-           ▼
-┌─────────────────────────────────────────────────────────────┐
-│                        本地 Daemon                           │
-│                  (Node.js / Express / WS)                    │
-│                                                              │
-│  会话管理 · 工作流引擎 · 终端服务                             │
-│  Worktree 服务 · 运行时更新器 · RPC 进程池                    │
-│  搜索索引器 · 存储 (SQLite) · 统计聚合器                      │
-└─────────────────────────────────────────────────────────────┘
-```
-
-| 层级 | 技术 | 职责 |
-|------|------|------|
-| **原生客户端** | Swift 6 / SwiftUI | 实时 UI、文件监听、终端仿真、diff 渲染 |
-| **本地 Daemon** | Node.js 22 / Express / WS | 会话编排、工作流引擎、RPC 进程池、持久化 |
-| **协议层** | TypeScript / Zod | 客户端-Daemon 之间的共享类型安全 schema |
+**AgentPi 给你一个统一的驾驶舱。** 一个界面监控所有活跃会话，内联审查 diff，批准工具调用，并行启动多个 Agent，追踪 token 用量——所有数据完全留在你的本机，绝不外传。
 
 ## 功能特性
 
-**会话管理** — 实时监控，状态追踪（思考中 / 执行工具 / 等待审批 / 等待用户输入 / 空闲），上下文窗口可视化，token 与费用统计，自定义会话命名（SQLite 持久化）。
-
-**Hub 布局** — 单会话（全尺寸 + 侧面板）、列表（按供应商分组）、两列网格、三列网格。任意卡片可最大化。
-
-**多会话启动器** — 跨供应商并行启动会话。手动模式（直接 prompt）或 Smart 模式（AI 智能任务编排）。
-
-**Git 集成** — UI 中创建/删除 worktree，基于分支启动会话，内联 diff 审查，待定变更预览。
-
-**开发体验** — 命令面板（Cmd+K），Web 预览（自动启动开发服务器），计划视图（语法高亮），全局搜索，拖拽文件附件。
-
-**自定义** — YAML 主题热重载，内置主题（Claude、Codex、Bat、Xcode），可配置通知音效，菜单栏或弹窗显示模式。
+| | |
+|---|---|
+| **实时监控** | 通过 kqueue 文件系统监听器实时更新所有活跃会话。状态、token 计数、工具活动、上下文使用量一目了然。 |
+| **多供应商** | Claude Code、Codex 和 [pi-mono](https://github.com/badlogic/pi-mono) 会话并排运行。支持手动 prompt 或 AI 智能编排并行启动。 |
+| **内联 Diff 审查** | 分栏 diff 视图，内置编辑器。审查代码变更并直接向 Claude 发送反馈。 |
+| **内嵌终端** | 每个会话卡片内置完整的 PTY 终端（SwiftTerm）。无需离开 App 即可恢复或启动会话。 |
+| **工作流引擎** | 基于 DAG 的工作流执行，支持并行节点、条件分支、审批门控和安全表达式求值。 |
+| **Git 集成** | Worktree 管理，基于分支启动会话，内联 diff 审查，待定变更预览。 |
+| **开发体验** | 命令面板（Cmd+K），Web 预览，计划视图，全局搜索，拖拽文件附件。 |
+| **高度可定制** | YAML 主题热重载，内置主题（Claude / Codex / Bat / Xcode），通知音效，菜单栏或弹窗模式。 |
+| **隐私优先** | 完全运行在你的本机。读取本地会话文件，仅通过 localhost 通信。无遥测、无云端、无追踪。 |
 
 ## 快速开始
 
@@ -111,6 +69,71 @@ npm run mac:open
 npm run mac:demo
 ```
 
+## 架构
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                    macOS 原生客户端                       │
+│                (Swift / SwiftUI / AppKit)                │
+│                                                          │
+│  Hub 视图 · Diff 视图 · 终端 · 命令面板 · 设置          │
+│                        │                                 │
+│              CLISessionsViewModel                        │
+│              (@MainActor, Combine)                       │
+│                        │                                 │
+│  SessionFileWatcher · CodexFileWatcher · ThemeWatcher    │
+│  (kqueue + 字节偏移增量读取)                             │
+└────────────┬─────────────────────────────────────────────┘
+             │
+   ~/.claude/projects/{path}/{id}.jsonl
+   ~/.codex/sessions/{date}/{id}.jsonl
+             │
+             │  HTTP + WebSocket (localhost:43210)
+             ▼
+┌──────────────────────────────────────────────────────────┐
+│                       本地 Daemon                        │
+│                (Node.js / Express / WS)                  │
+│                                                          │
+│  会话管理 · 工作流引擎 · 终端服务                        │
+│  Worktree 服务 · 运行时更新器 · RPC 进程池               │
+│  搜索索引器 · 存储 (SQLite) · 统计聚合器                 │
+└──────────────────────────────────────────────────────────┘
+```
+
+| 层级 | 技术 | 职责 |
+|------|------|------|
+| **原生客户端** | Swift 6 / SwiftUI | 实时 UI、文件监听、终端仿真、diff 渲染 |
+| **本地 Daemon** | Node.js 22 / Express / WS | 会话编排、工作流引擎、RPC 进程池、持久化 |
+| **协议层** | TypeScript / Zod | 客户端 ↔ Daemon 之间的共享类型安全 schema |
+
+## 项目结构
+
+```
+agentpi/
+├── apps/daemon/               # 本地 Daemon（Node.js + Express + WebSocket）
+├── packages/protocol/         # 共享 Zod Schema（TypeScript）
+├── external/AgentPi/          # macOS 原生客户端（Swift / SwiftUI）
+│   └── app/modules/AgentPiCore/   # 核心 Package（110+ Swift 源文件）
+├── docs/                      # 构建、测试、排障文档
+└── scripts/                   # 构建、数据注入、诊断脚本
+```
+
+## 技术栈
+
+| 组件 | 技术 |
+|------|------|
+| macOS 客户端 | Swift 6.0, SwiftUI, AppKit, Combine |
+| Daemon | Node.js 22, Express 5, WebSocket |
+| 协议层 | TypeScript 5.9, Zod 4 |
+| 持久化 | SQLite（GRDB.swift + 自定义存储） |
+| 文件监听 | kqueue（DispatchSource） |
+| 终端 | SwiftTerm（PTY 仿真） |
+| Diff 渲染 | PierreDiffsSwift |
+| AI 集成 | ClaudeCodeSDK |
+| 自动更新 | Sparkle（EdDSA） |
+| 测试 | Vitest, XCTest |
+| CI/CD | GitHub Actions |
+
 ## 脚本参考
 
 | 脚本 | 说明 |
@@ -136,47 +159,14 @@ npm run mac:demo
 
 ## 安全模型
 
-- **Token 认证**：除 `/health` 外所有路由均需认证（`x-agentpi-token` header 或 `Bearer` token）
-- **CORS 白名单**：仅限 `localhost`
-- **WebSocket 认证**：通过 header 或 query 参数连接 `/ws`
-- **审计日志**：所有操作记录到本地 SQLite
-- **零网络出口**：所有通信仅在 `127.0.0.1` 上进行
+所有通信仅在 `127.0.0.1` 上进行，零网络出口。
+
+- 除 `/health` 外所有路由均需 Token 认证（`x-agentpi-token` header 或 `Bearer` token）
+- CORS 白名单仅限 `localhost`
+- WebSocket 通过 header 或 query 参数认证
+- 所有操作记录到本地 SQLite 审计日志
 
 通过环境变量 `AGENTPI_DAEMON_TOKEN` 设置 token。
-
-## pi-mono 兼容
-
-AgentPi 兼容 [pi-mono](https://github.com/badlogic/pi-mono) — 由 [@badlogic](https://github.com/badlogic) 开发的开源 AI Agent 工具箱，包含编程 Agent CLI、统一多供应商 LLM API、TUI/Web UI 库、Slack 机器人、vLLM Pod 管理等组件。
-
-AgentPi 可以像管理 Claude Code 和 Codex 一样监控和管理 pi-mono 编程 Agent 会话——一个中心管理所有 AI 编程 Agent。
-
-## 项目结构
-
-```
-agentpi/
-├── apps/daemon/           # 本地 Daemon（Node.js + Express + WebSocket）
-├── packages/protocol/     # 共享 Zod Schema（TypeScript）
-├── external/AgentPi/      # macOS 原生客户端（Swift / SwiftUI）
-│   └── app/modules/AgentPiCore/  # 核心 Package（110+ Swift 源文件）
-├── docs/                  # 构建、测试、排障文档
-└── scripts/               # 构建、数据注入、诊断脚本
-```
-
-## 技术栈
-
-| 组件 | 技术 |
-|------|------|
-| **macOS 客户端** | Swift 6.0, SwiftUI, AppKit, Combine |
-| **Daemon** | Node.js 22, Express 5, WebSocket |
-| **协议层** | TypeScript 5.9, Zod 4 |
-| **持久化** | SQLite（GRDB.swift + 自定义存储） |
-| **文件监听** | kqueue（DispatchSource） |
-| **终端** | SwiftTerm（PTY 仿真） |
-| **Diff 渲染** | PierreDiffsSwift |
-| **AI 集成** | ClaudeCodeSDK |
-| **自动更新** | Sparkle（EdDSA） |
-| **测试** | Vitest, XCTest |
-| **CI/CD** | GitHub Actions |
 
 ## 自定义主题
 
@@ -194,6 +184,10 @@ colors:
     dark: "#1A1A2E"
     light: "#FFFFFF"
 ```
+
+## pi-mono 兼容
+
+AgentPi 兼容 [pi-mono](https://github.com/badlogic/pi-mono) — 由 [@badlogic](https://github.com/badlogic) 开发的开源 AI Agent 工具箱。AgentPi 可以像管理 Claude Code 和 Codex 一样监控 pi-mono 会话——一个中心管理所有 AI 编程 Agent。
 
 ## 参与贡献
 

@@ -50,6 +50,8 @@ public struct CodexSessionJSONLParser {
     public let toolName: String
     public let toolUseId: String
     public let timestamp: Date
+    public let input: String?
+    public let codeChangeInput: CodeChangeInput?
   }
 
   // MARK: - Public API
@@ -280,9 +282,24 @@ public struct CodexSessionJSONLParser {
     case "function_call":
       guard let name = payload["name"] as? String,
             let callId = payload["call_id"] as? String else { return }
+      let toolInput = payload["arguments"] ?? payload["input"]
+      let inputPreview = extractInputPreview(toolInput)
+      let codeChangeInput = extractCodeChangeInput(name: name, input: toolInput)
       result.toolCalls[name, default: 0] += 1
-      result.pendingToolUses[callId] = PendingToolInfo(toolName: name, toolUseId: callId, timestamp: timestamp ?? Date())
-      addActivity(type: .toolUse(name: name), description: name, timestamp: timestamp, to: &result)
+      result.pendingToolUses[callId] = PendingToolInfo(
+        toolName: name,
+        toolUseId: callId,
+        timestamp: timestamp ?? Date(),
+        input: inputPreview,
+        codeChangeInput: codeChangeInput
+      )
+      addActivity(
+        type: .toolUse(name: name),
+        description: inputPreview ?? name,
+        timestamp: timestamp,
+        codeChangeInput: codeChangeInput,
+        to: &result
+      )
 
     case "function_call_output":
       if let callId = payload["call_id"] as? String {
@@ -293,11 +310,43 @@ public struct CodexSessionJSONLParser {
 
     case "custom_tool_call":
       guard let name = payload["name"] as? String else { return }
-      let status = payload["status"] as? String
-      result.toolCalls[name, default: 0] += 1
-      addActivity(type: .toolUse(name: name), description: name, timestamp: timestamp, to: &result)
-      if status == "completed" {
-        addActivity(type: .toolResult(name: name, success: true), description: "Completed", timestamp: timestamp, to: &result)
+      let status = (payload["status"] as? String ?? "").lowercased()
+      let callId = payload["call_id"] as? String
+        ?? payload["id"] as? String
+        ?? UUID().uuidString
+      let toolInput = payload["arguments"] ?? payload["input"]
+      let inputPreview = extractInputPreview(toolInput)
+      let codeChangeInput = extractCodeChangeInput(name: name, input: toolInput)
+      let isCompleted = status == "completed" || status == "success" || status == "succeeded"
+      let isFailed = status == "failed" || status == "error"
+
+      if isCompleted || isFailed {
+        result.pendingToolUses.removeValue(forKey: callId)
+        addActivity(
+          type: .toolResult(name: name, success: !isFailed),
+          description: isFailed ? "Failed" : "Completed",
+          timestamp: timestamp,
+          to: &result
+        )
+      } else {
+        let isNewCall = result.pendingToolUses[callId] == nil
+        if isNewCall {
+          result.toolCalls[name, default: 0] += 1
+          addActivity(
+            type: .toolUse(name: name),
+            description: inputPreview ?? name,
+            timestamp: timestamp,
+            codeChangeInput: codeChangeInput,
+            to: &result
+          )
+        }
+        result.pendingToolUses[callId] = PendingToolInfo(
+          toolName: name,
+          toolUseId: callId,
+          timestamp: timestamp ?? Date(),
+          input: inputPreview,
+          codeChangeInput: codeChangeInput
+        )
       }
 
     default:
@@ -342,9 +391,24 @@ public struct CodexSessionJSONLParser {
         case "toolCall":
           let name = item["name"] as? String ?? "tool"
           let callId = item["id"] as? String ?? UUID().uuidString
+          let toolInput = item["arguments"] ?? item["input"]
+          let inputPreview = extractInputPreview(toolInput)
+          let codeChangeInput = extractCodeChangeInput(name: name, input: toolInput)
           result.toolCalls[name, default: 0] += 1
-          result.pendingToolUses[callId] = PendingToolInfo(toolName: name, toolUseId: callId, timestamp: timestamp ?? Date())
-          addActivity(type: .toolUse(name: name), description: name, timestamp: timestamp, to: &result)
+          result.pendingToolUses[callId] = PendingToolInfo(
+            toolName: name,
+            toolUseId: callId,
+            timestamp: timestamp ?? Date(),
+            input: inputPreview,
+            codeChangeInput: codeChangeInput
+          )
+          addActivity(
+            type: .toolUse(name: name),
+            description: inputPreview ?? name,
+            timestamp: timestamp,
+            codeChangeInput: codeChangeInput,
+            to: &result
+          )
 
         case "thinking":
           addActivity(type: .thinking, description: "Thinking...", timestamp: timestamp, to: &result)
@@ -384,6 +448,21 @@ public struct CodexSessionJSONLParser {
   // MARK: - Status
 
   public static func updateCurrentStatus(_ result: inout ParseResult, approvalTimeoutSeconds: Int = 0) {
+    // Pending tool uses are the strongest signal of "still waiting", including approval flows.
+    if let pending = latestPendingToolUse(from: result) {
+      let pendingDuration = Date().timeIntervalSince(pending.timestamp)
+      let timeout = Double(max(1, approvalTimeoutSeconds))
+
+      if isBackgroundTool(name: pending.toolName) {
+        result.currentStatus = .executingTool(name: pending.toolName)
+      } else if pendingDuration > timeout {
+        result.currentStatus = .awaitingApproval(tool: pending.toolName)
+      } else {
+        result.currentStatus = .executingTool(name: pending.toolName)
+      }
+      return
+    }
+
     guard let lastActivity = result.recentActivities.last else {
       result.currentStatus = .idle
       return
@@ -416,13 +495,14 @@ public struct CodexSessionJSONLParser {
     type: ActivityType,
     description: String,
     timestamp: Date?,
+    codeChangeInput: CodeChangeInput? = nil,
     to result: inout ParseResult
   ) {
     let entry = ActivityEntry(
       timestamp: timestamp ?? Date(),
       type: type,
       description: description,
-      toolInput: nil
+      toolInput: codeChangeInput
     )
     result.recentActivities.append(entry)
 
@@ -447,6 +527,94 @@ public struct CodexSessionJSONLParser {
       result.firstMessage = text
     }
     result.lastMessage = text
+  }
+
+  private static func latestPendingToolUse(from result: ParseResult) -> PendingToolInfo? {
+    result.pendingToolUses.values.max { $0.timestamp < $1.timestamp }
+  }
+
+  private static func isBackgroundTool(name: String) -> Bool {
+    name.caseInsensitiveCompare("Task") == .orderedSame
+  }
+
+  private static func extractInputPreview(_ input: Any?) -> String? {
+    guard let dict = normalizeDictionary(input) else { return nil }
+
+    if let path = dict["file_path"] as? String ?? dict["path"] as? String {
+      return URL(fileURLWithPath: path).lastPathComponent
+    }
+    if let command = dict["command"] as? String {
+      return String(command.prefix(80))
+    }
+    if let query = dict["query"] as? String {
+      return String(query.prefix(80))
+    }
+    if let pattern = dict["pattern"] as? String {
+      return String(pattern.prefix(80))
+    }
+
+    return nil
+  }
+
+  private static func extractCodeChangeInput(name: String, input: Any?) -> CodeChangeInput? {
+    guard let dict = normalizeDictionary(input),
+          let filePath = dict["file_path"] as? String ?? dict["path"] as? String else {
+      return nil
+    }
+
+    switch name.lowercased() {
+    case "edit":
+      return CodeChangeInput(
+        toolType: .edit,
+        filePath: filePath,
+        oldString: dict["old_string"] as? String ?? dict["oldText"] as? String,
+        newString: dict["new_string"] as? String ?? dict["newText"] as? String,
+        replaceAll: dict["replace_all"] as? Bool ?? dict["replaceAll"] as? Bool
+      )
+
+    case "write":
+      return CodeChangeInput(
+        toolType: .write,
+        filePath: filePath,
+        newString: dict["content"] as? String ?? dict["newText"] as? String
+      )
+
+    case "multiedit":
+      let rawEdits = dict["edits"] as? [[String: Any]]
+      let edits = rawEdits?.compactMap { edit -> [String: String]? in
+        var normalized: [String: String] = [:]
+        if let old = edit["old_string"] as? String ?? edit["oldText"] as? String {
+          normalized["old_string"] = old
+        }
+        if let new = edit["new_string"] as? String ?? edit["newText"] as? String {
+          normalized["new_string"] = new
+        }
+        if let replace = edit["replace_all"] as? Bool ?? edit["replaceAll"] as? Bool {
+          normalized["replace_all"] = String(replace)
+        }
+        return normalized.isEmpty ? nil : normalized
+      }
+      return CodeChangeInput(
+        toolType: .multiEdit,
+        filePath: filePath,
+        edits: edits
+      )
+
+    default:
+      return nil
+    }
+  }
+
+  private static func normalizeDictionary(_ input: Any?) -> [String: Any]? {
+    if let dict = input as? [String: Any] {
+      return dict
+    }
+    if let json = input as? String,
+       let data = json.data(using: .utf8),
+       let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+      return dict
+    }
+    return nil
   }
 
   private static func parseTimestamp(_ string: String?) -> Date? {

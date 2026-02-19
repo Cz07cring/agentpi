@@ -19,6 +19,8 @@ export interface RpcClientProcessOptions {
   model?: string;
 }
 
+const MAX_BUFFER_BYTES = 10 * 1024 * 1024; // 10 MB
+
 export class RpcClientProcess extends EventEmitter {
   private child: ChildProcessWithoutNullStreams | null = null;
   private buffer = "";
@@ -45,11 +47,14 @@ export class RpcClientProcess extends EventEmitter {
     const sessionDir = join(homedir(), ".agentpi", "sessions", this.options.platformSessionId);
     mkdirSync(sessionDir, { recursive: true });
 
+    const env = { ...process.env } as NodeJS.ProcessEnv;
+    delete env.AGENTPI_DAEMON_TOKEN;
+
     this.child = spawn(process.execPath, args, {
       cwd: this.options.cwd,
       stdio: "pipe",
       env: {
-        ...process.env,
+        ...env,
         AGENTPI_SESSION_DIR: sessionDir,
         PI_SESSION_DIR: sessionDir,
       },
@@ -83,9 +88,10 @@ export class RpcClientProcess extends EventEmitter {
         return;
       }
 
+      const spawnTimeoutMs = Number(process.env.AGENTPI_RPC_SPAWN_TIMEOUT_MS) || 15_000;
       const timeout = setTimeout(() => {
         reject(new Error("RPC process did not become ready in time"));
-      }, 6_000);
+      }, spawnTimeoutMs);
 
       const onError = (error: Error) => {
         clearTimeout(timeout);
@@ -95,7 +101,7 @@ export class RpcClientProcess extends EventEmitter {
 
       this.on("error", onError);
 
-      this.send("get_state", undefined, 6_000)
+      this.send("get_state", undefined, spawnTimeoutMs)
         .then(() => {
           clearTimeout(timeout);
           this.off("error", onError);
@@ -150,6 +156,11 @@ export class RpcClientProcess extends EventEmitter {
 
   private onStdout(chunk: string): void {
     this.buffer += chunk;
+    if (this.buffer.length > MAX_BUFFER_BYTES) {
+      this.emit("error", new Error("RPC stdout buffer exceeded 10 MB without a newline"));
+      this.buffer = "";
+      return;
+    }
     while (true) {
       const newlineIndex = this.buffer.indexOf("\n");
       if (newlineIndex < 0) break;

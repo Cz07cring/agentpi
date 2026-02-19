@@ -66,6 +66,10 @@ public struct MultiSessionLaunchView: View {
 
           providerPills
 
+          if viewModel.hasAnyProviderSelected {
+            templateSelectionSection
+          }
+
           if !missingProviderAvailabilities.isEmpty {
             cliAvailabilityBanner
           }
@@ -500,15 +504,12 @@ public struct MultiSessionLaunchView: View {
         _ = provider.loadDataRepresentation(for: .png) { data, error in
           guard let data = data, error == nil else { return }
           Task { @MainActor in
-            let tempURL = FileManager.default.temporaryDirectory
-              .appendingPathComponent("screenshot_\(UUID().uuidString).png")
-            do {
-              try data.write(to: tempURL)
-              withAnimation(.easeInOut(duration: 0.2)) {
-                viewModel.addAttachedFile(tempURL, isTemporary: true)
-              }
-            } catch {
-              print("Failed to save dropped screenshot: \(error)")
+            guard let tempURL = writeImageDataToTemp(data) else {
+              print("Failed to decode dropped screenshot")
+              return
+            }
+            withAnimation(.easeInOut(duration: 0.2)) {
+              viewModel.addAttachedFile(tempURL, isTemporary: true)
             }
           }
         }
@@ -516,15 +517,12 @@ public struct MultiSessionLaunchView: View {
         _ = provider.loadDataRepresentation(for: .tiff) { data, error in
           guard let data = data, error == nil else { return }
           Task { @MainActor in
-            let tempURL = FileManager.default.temporaryDirectory
-              .appendingPathComponent("screenshot_\(UUID().uuidString).tiff")
-            do {
-              try data.write(to: tempURL)
-              withAnimation(.easeInOut(duration: 0.2)) {
-                viewModel.addAttachedFile(tempURL, isTemporary: true)
-              }
-            } catch {
-              print("Failed to save dropped screenshot: \(error)")
+            guard let tempURL = writeImageDataToTemp(data) else {
+              print("Failed to decode dropped screenshot")
+              return
+            }
+            withAnimation(.easeInOut(duration: 0.2)) {
+              viewModel.addAttachedFile(tempURL, isTemporary: true)
             }
           }
         }
@@ -532,15 +530,12 @@ public struct MultiSessionLaunchView: View {
         _ = provider.loadDataRepresentation(for: .image) { data, error in
           guard let data = data, error == nil else { return }
           Task { @MainActor in
-            let tempURL = FileManager.default.temporaryDirectory
-              .appendingPathComponent("dropped_image_\(UUID().uuidString).png")
-            do {
-              try data.write(to: tempURL)
-              withAnimation(.easeInOut(duration: 0.2)) {
-                viewModel.addAttachedFile(tempURL, isTemporary: true)
-              }
-            } catch {
-              print("Failed to save dropped image: \(error)")
+            guard let tempURL = writeImageDataToTemp(data) else {
+              print("Failed to decode dropped image")
+              return
+            }
+            withAnimation(.easeInOut(duration: 0.2)) {
+              viewModel.addAttachedFile(tempURL, isTemporary: true)
             }
           }
         }
@@ -574,6 +569,28 @@ public struct MultiSessionLaunchView: View {
       }
     case .failure(let error):
       print("File picker error: \(error.localizedDescription)")
+    }
+  }
+
+  private func writeImageDataToTemp(_ data: Data) -> URL? {
+    guard let image = NSImage(data: data) else { return nil }
+    return writeImageToTemp(image)
+  }
+
+  private func writeImageToTemp(_ image: NSImage) -> URL? {
+    guard let tiff = image.tiffRepresentation,
+          let bitmap = NSBitmapImageRep(data: tiff),
+          let pngData = bitmap.representation(using: .png, properties: [:]) else {
+      return nil
+    }
+
+    let tempURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent("dropped_image_\(UUID().uuidString).png")
+    do {
+      try pngData.write(to: tempURL)
+      return tempURL
+    } catch {
+      return nil
     }
   }
 
@@ -721,6 +738,104 @@ public struct MultiSessionLaunchView: View {
             .lineLimit(2)
         }
       }
+    }
+  }
+
+  private var templateSelectionSection: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text(L10n.t("launch.templates.title", "Command Templates"))
+        .font(.system(size: 11))
+        .foregroundColor(.secondary)
+
+      if viewModel.isClaudeSelected {
+        templatePickerRow(provider: .claude, title: "Claude")
+      }
+      if viewModel.isCodexSelected {
+        templatePickerRow(provider: .codex, title: "Codex")
+      }
+      if viewModel.isPiSelected {
+        templatePickerRow(provider: .pi, title: "AgentPi")
+      }
+
+      if viewModel.hasAnyBatchTemplateSelected {
+        HStack(spacing: 6) {
+          Image(systemName: "bolt.horizontal.circle")
+            .font(.system(size: 10))
+            .foregroundColor(.orange)
+          Text(L10n.t("launch.templates.batch_hint", "Batch templates run as one-off tasks and do not create long-lived sessions."))
+            .font(.system(size: 10))
+            .foregroundColor(.secondary)
+        }
+      }
+
+      if !templateMissingProviders.isEmpty {
+        HStack(spacing: 8) {
+          Image(systemName: "exclamationmark.triangle.fill")
+            .font(.system(size: 10))
+            .foregroundColor(.orange)
+          Text(
+            L10n.f(
+              "launch.templates.missing_template_format",
+              "No template configured for: %@",
+              templateMissingProviders.map(\.rawValue).joined(separator: ", ")
+            )
+          )
+          .font(.system(size: 10))
+          .foregroundColor(.secondary)
+
+          Spacer(minLength: 0)
+
+          Button(L10n.t("launch.action.open_settings", "Open Settings")) {
+            openSettings()
+          }
+          .buttonStyle(.plain)
+          .font(.system(size: 10, weight: .medium))
+          .foregroundColor(.brandPrimary)
+        }
+      }
+    }
+    .padding(8)
+    .background(
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.sm)
+        .fill(Color.primary.opacity(0.04))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.sm)
+        .stroke(Color.borderSubtle, lineWidth: 1)
+    )
+  }
+
+  private func templatePickerRow(provider: SessionProviderKind, title: String) -> some View {
+    let templates = viewModel.templatesForLaunch(provider: provider)
+    let selectedId = viewModel.selectedLaunchTemplateId(for: provider)
+    return HStack(spacing: 8) {
+      Text(title)
+        .font(.system(size: 10, weight: .medium))
+        .frame(width: 58, alignment: .leading)
+        .foregroundColor(Color.brandPrimary(for: provider))
+
+      if templates.isEmpty {
+        Text(L10n.t("launch.templates.empty", "No templates"))
+          .font(.system(size: 10))
+          .foregroundColor(.secondary)
+      } else {
+        Picker("", selection: Binding(
+          get: { selectedId ?? templates.first?.id ?? "" },
+          set: { newId in
+            viewModel.setSelectedLaunchTemplate(id: newId, for: provider)
+          }
+        )) {
+          ForEach(templates, id: \.id) { template in
+            let suffix = template.executionKind == .batchRun || template.intent == .batchRun
+              ? L10n.t("launch.templates.batch_suffix", "(Batch)")
+              : L10n.t("launch.templates.session_suffix", "(Session)")
+            Text("\(template.name) \(suffix)").tag(template.id)
+          }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+      }
+      Spacer(minLength: 0)
     }
   }
 
@@ -1459,12 +1574,12 @@ public struct MultiSessionLaunchView: View {
           }
           .buttonStyle(.borderedProminent)
           .tint(.primary)
-          .disabled(launchDisabledReason != nil || !viewModel.isValid || viewModel.isLaunching)
-          .help(launchDisabledReason ?? "")
+          .disabled(effectiveLaunchDisabledReason != nil || !viewModel.isValid || viewModel.isLaunching)
+          .help(effectiveLaunchDisabledReason ?? "")
         }
       }
 
-      if let reason = launchDisabledReason, !viewModel.isLaunching {
+      if let reason = effectiveLaunchDisabledReason, !viewModel.isLaunching {
         HStack(spacing: 4) {
           Image(systemName: "info.circle")
             .font(.system(size: 10))
@@ -1520,7 +1635,16 @@ public struct MultiSessionLaunchView: View {
   }
 
   private var launchButtonTitle: String {
-    LaunchCopyResolver.launchButtonTitle(for: copyState, isLaunching: viewModel.isLaunching)
+    if viewModel.hasAnyBatchTemplateSelected {
+      if viewModel.selectedProviders.contains(where: { provider in
+        let template = viewModel.selectedLaunchTemplate(for: provider)
+        return template?.executionKind == .interactiveSession && template?.intent != .batchRun
+      }) {
+        return L10n.t("launch.button.mixed", "Launch + Run Batch")
+      }
+      return L10n.t("launch.button.batch", "Run Batch Tasks")
+    }
+    return LaunchCopyResolver.launchButtonTitle(for: copyState, isLaunching: viewModel.isLaunching)
   }
 
   private var copyState: LaunchCopyState {
@@ -1541,6 +1665,25 @@ public struct MultiSessionLaunchView: View {
 
   private var launchDisabledReason: String? {
     LaunchCopyResolver.launchDisabledReason(for: copyState)
+  }
+
+  private var templateMissingProviders: [SessionProviderKind] {
+    viewModel.selectedProviders.filter { provider in
+      viewModel.selectedLaunchTemplate(for: provider) == nil
+    }
+  }
+
+  private var templateDisabledReason: String? {
+    guard !templateMissingProviders.isEmpty else { return nil }
+    return L10n.f(
+      "launch.templates.missing_template_format",
+      "No template configured for: %@",
+      templateMissingProviders.map(\.rawValue).joined(separator: ", ")
+    )
+  }
+
+  private var effectiveLaunchDisabledReason: String? {
+    templateDisabledReason ?? launchDisabledReason
   }
 
   private var selectedProviderAvailabilities: [CLIDetectionService.ProviderAvailability] {

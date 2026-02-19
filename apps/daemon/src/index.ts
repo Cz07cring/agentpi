@@ -4,8 +4,15 @@ const daemon = createDaemonApp();
 
 void daemon.listen();
 
+let shuttingDown = false;
 const shutdown = async () => {
-  await daemon.shutdown();
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try {
+    await daemon.shutdown();
+  } catch {
+    // Best-effort shutdown; exit regardless.
+  }
   process.exit(0);
 };
 

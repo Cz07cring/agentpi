@@ -197,6 +197,15 @@ public final class AgentPiProvider {
         defaults.set("pi", forKey: AgentPiDefaults.piCommand)
       }
     }
+
+    CommandTemplateService.shared.ensureInitialized(
+      claudeCommand: defaults.string(forKey: AgentPiDefaults.claudeCommand) ?? configuration.cliCommand,
+      codexCommand: defaults.string(forKey: AgentPiDefaults.codexCommand) ?? configuration.codexCommand,
+      piCommand: defaults.string(forKey: AgentPiDefaults.piCommand) ?? configuration.piCommand,
+      mobileRelayClaudeCommand: defaults.string(forKey: AgentPiDefaults.mobileRelayClaudeCommand),
+      mobileRelayCodexCommand: defaults.string(forKey: AgentPiDefaults.mobileRelayCodexCommand),
+      mobileRelayPiCommand: defaults.string(forKey: AgentPiDefaults.mobileRelayPiCommand)
+    )
   }
 
   /// Creates a provider with default configuration

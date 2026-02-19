@@ -17,6 +17,7 @@ import {
   SessionPromptRequestSchema,
   WaitSessionIdleRequestSchema,
   parseOrThrow,
+  type WsEvent,
 } from "@agentpi/protocol";
 import { DaemonEventBus } from "./lib/event-bus.js";
 import { log } from "./lib/logger.js";
@@ -73,6 +74,8 @@ function extractWsToken(urlText: string | undefined, headers: Record<string, str
   }
 }
 
+// Allow empty/null origin: macOS native apps (WKWebView, SwiftUI) do not send
+// an Origin header. Security relies on localhost binding + token auth instead.
 function isAllowedOrigin(origin: string | undefined): boolean {
   if (!origin || origin === "null") return true;
   return LOCAL_ORIGIN_RE.test(origin);
@@ -87,6 +90,18 @@ function asSafeDirectory(pathInput: string): string {
     throw new Error(`Directory does not exist: ${trimmed}`);
   }
   return trimmed;
+}
+
+function classifySessionError(message: string): { code: string; status: number } {
+  if (/not found/i.test(message)) return { code: "session_not_found", status: 404 };
+  if (/is closed/i.test(message)) return { code: "session_closed", status: 409 };
+  if (/Directory does not exist/i.test(message) || /invalid.*directory|invalid.*path/i.test(message))
+    return { code: "invalid_cwd", status: 400 };
+  if (/is not allowed/i.test(message)) return { code: "invalid_shell_or_command", status: 400 };
+  if (/ready in time|spawn.*timeout/i.test(message)) return { code: "rpc_spawn_timeout", status: 400 };
+  if (/did not become idle/i.test(message)) return { code: "wait_idle_timeout", status: 408 };
+  if (/already exists/i.test(message)) return { code: "session_already_exists", status: 409 };
+  return { code: "session_error", status: 400 };
 }
 
 function validateShell(shell?: string): string | undefined {
@@ -149,6 +164,18 @@ export function createDaemonApp(): DaemonApp {
   const workflows = new WorkflowEngine(store, sessions, bus);
   const devServers = new DevServerService();
   const terminals = new TerminalService(bus);
+  const wsReplayBuffer: WsEvent[] = [];
+  // Only replay state-change events on WS reconnect, not streaming noise.
+  const WS_REPLAY_TYPES = new Set([
+    "session.state",
+    "session.event",
+    "workflow.run.state",
+    "approval.requested",
+    "approval.resolved",
+    "terminal.closed",
+    "runtime.update.state",
+  ]);
+  store.pruneAuditLogs();
 
   const writeAuditLog = (
     req: express.Request,
@@ -215,13 +242,21 @@ export function createDaemonApp(): DaemonApp {
     });
   });
 
+  app.get("/v1/sessions", (_req, res) => {
+    const sessionIds = sessions.listSessionIds();
+    res.status(200).json({ sessions: sessionIds });
+  });
+
   app.post("/v1/sessions", async (req, res) => {
     try {
       const input = parseOrThrow(CreateSessionRequestSchema, req.body);
-      const created = await sessions.createSession(input);
+      const cwd = input.cwd ? asSafeDirectory(input.cwd) : undefined;
+      const created = await sessions.createSession({ ...input, cwd });
       res.status(201).json(created);
     } catch (error) {
-      res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      const classified = classifySessionError(message);
+      res.status(classified.status).json({ error: message, code: classified.code });
     }
   });
 
@@ -231,7 +266,9 @@ export function createDaemonApp(): DaemonApp {
       await sessions.prompt(req.params.id, input);
       res.status(202).json({ ok: true });
     } catch (error) {
-      res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      const classified = classifySessionError(message);
+      res.status(classified.status).json({ error: message, code: classified.code });
     }
   });
 
@@ -241,7 +278,9 @@ export function createDaemonApp(): DaemonApp {
       await sessions.steer(req.params.id, input);
       res.status(202).json({ ok: true });
     } catch (error) {
-      res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      const classified = classifySessionError(message);
+      res.status(classified.status).json({ error: message, code: classified.code });
     }
   });
 
@@ -251,7 +290,9 @@ export function createDaemonApp(): DaemonApp {
       await sessions.followUp(req.params.id, input);
       res.status(202).json({ ok: true });
     } catch (error) {
-      res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      const classified = classifySessionError(message);
+      res.status(classified.status).json({ error: message, code: classified.code });
     }
   });
 
@@ -260,7 +301,9 @@ export function createDaemonApp(): DaemonApp {
       await sessions.abort(req.params.id);
       res.status(200).json({ ok: true });
     } catch (error) {
-      res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      const classified = classifySessionError(message);
+      res.status(classified.status).json({ error: message, code: classified.code });
     }
   });
 
@@ -269,7 +312,9 @@ export function createDaemonApp(): DaemonApp {
       const state = await sessions.getState(req.params.id);
       res.status(200).json({ sessionId: req.params.id, state });
     } catch (error) {
-      res.status(404).json({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      const classified = classifySessionError(message);
+      res.status(classified.status).json({ error: message, code: classified.code });
     }
   });
 
@@ -278,7 +323,21 @@ export function createDaemonApp(): DaemonApp {
       const runtimeState = await sessions.getRuntimeState(req.params.id, true);
       res.status(200).json({ sessionId: req.params.id, runtimeState });
     } catch (error) {
-      res.status(404).json({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      const classified = classifySessionError(message);
+      res.status(classified.status).json({ error: message, code: classified.code });
+    }
+  });
+
+  app.delete("/v1/sessions/:id", async (req, res) => {
+    try {
+      await sessions.close(req.params.id);
+      writeAuditLog(req, "session.close", { sessionId: req.params.id }, "ok");
+      res.status(200).json({ ok: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const classified = classifySessionError(message);
+      res.status(classified.status).json({ error: message, code: classified.code });
     }
   });
 
@@ -288,7 +347,9 @@ export function createDaemonApp(): DaemonApp {
       const runtimeState = await sessions.waitIdle(req.params.id, input.timeoutMs);
       res.status(200).json({ sessionId: req.params.id, runtimeState });
     } catch (error) {
-      res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      const classified = classifySessionError(message);
+      res.status(classified.status).json({ error: message, code: classified.code });
     }
   });
 
@@ -321,8 +382,13 @@ export function createDaemonApp(): DaemonApp {
       writeAuditLog(req, "worktree.remove", { worktreePath }, "ok");
       res.status(200).json({ ok: true });
     } catch (error) {
-      writeAuditLog(req, "worktree.remove", { worktreeId: req.params.id }, "error");
-      res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      let code: string | undefined;
+      if (/Invalid worktree id/i.test(message)) code = "invalid_worktree_id";
+      else if (/not a git worktree/i.test(message)) code = "not_a_git_worktree";
+      else if (/does not exist/i.test(message)) code = "worktree_not_found";
+      writeAuditLog(req, "worktree.remove", { worktreeId: req.params.id, error: message }, "error");
+      res.status(400).json({ error: message, code });
     }
   });
 
@@ -367,7 +433,7 @@ export function createDaemonApp(): DaemonApp {
   app.post("/v1/approvals/:id/decision", (req, res) => {
     try {
       const input = parseOrThrow(ApprovalDecisionInputSchema, req.body ?? {});
-      workflows.resolveApproval({
+      const result = workflows.resolveApproval({
         id: randomUUID(),
         requestId: req.params.id,
         decision: input.decision,
@@ -375,7 +441,11 @@ export function createDaemonApp(): DaemonApp {
         comment: input.comment,
         decidedAt: new Date().toISOString(),
       });
-      res.status(200).json({ ok: true });
+      if (result?.alreadyResolved) {
+        res.status(200).json({ ok: true, alreadyResolved: true, currentStatus: result.currentStatus });
+      } else {
+        res.status(200).json({ ok: true });
+      }
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -408,7 +478,11 @@ export function createDaemonApp(): DaemonApp {
   });
 
   app.get("/v1/search", (req, res) => {
-    const q = String(req.query.q ?? "");
+    const q = String(req.query.q ?? "").trim();
+    if (q.length < 2) {
+      res.status(200).json({ query: q, results: [] });
+      return;
+    }
     const limit = Number(req.query.limit ?? 50);
     const data = searchIndexer.search(q, Number.isFinite(limit) ? limit : 50);
     res.status(200).json({ query: q, results: data });
@@ -432,6 +506,23 @@ export function createDaemonApp(): DaemonApp {
     }
   });
 
+  let terminalInputAuditBuffer: Array<{ req: express.Request; terminalId: string; bytes: number }> = [];
+  let terminalInputAuditTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const flushTerminalInputAudit = (): void => {
+    terminalInputAuditTimer = null;
+    if (terminalInputAuditBuffer.length === 0) return;
+    const batch = terminalInputAuditBuffer;
+    terminalInputAuditBuffer = [];
+    const totalBytes = batch.reduce((sum, entry) => sum + entry.bytes, 0);
+    const lastEntry = batch[batch.length - 1]!;
+    writeAuditLog(lastEntry.req, "terminal.input.batch", {
+      terminalId: lastEntry.terminalId,
+      totalBytes,
+      count: batch.length,
+    }, "ok");
+  };
+
   app.post("/v1/terminals/:id/input", (req, res) => {
     try {
       const input = String(req.body?.input ?? "");
@@ -439,7 +530,10 @@ export function createDaemonApp(): DaemonApp {
         throw new Error("terminal input too large");
       }
       terminals.write(req.params.id, input);
-      writeAuditLog(req, "terminal.input", { terminalId: req.params.id, bytes: input.length }, "ok");
+      terminalInputAuditBuffer.push({ req, terminalId: req.params.id, bytes: input.length });
+      if (!terminalInputAuditTimer) {
+        terminalInputAuditTimer = setTimeout(flushTerminalInputAudit, 2_000);
+      }
       res.status(200).json({ ok: true });
     } catch (error) {
       writeAuditLog(req, "terminal.input", { terminalId: req.params.id }, "error");
@@ -490,12 +584,40 @@ export function createDaemonApp(): DaemonApp {
   wss.on("connection", (client) => {
     wsCurrentConnections += 1;
     wsAcceptedConnections += 1;
+    for (const event of wsReplayBuffer) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify(event));
+      }
+    }
+    (client as WebSocket & { isAlive: boolean }).isAlive = true;
+    client.on("pong", () => {
+      (client as WebSocket & { isAlive: boolean }).isAlive = true;
+    });
     client.on("close", () => {
       wsCurrentConnections = Math.max(0, wsCurrentConnections - 1);
     });
   });
 
+  // Ping all WS clients every 30s; terminate unresponsive ones.
+  const wsPingInterval = setInterval(() => {
+    for (const client of wss.clients) {
+      const alive = client as WebSocket & { isAlive: boolean };
+      if (!alive.isAlive) {
+        client.terminate();
+        continue;
+      }
+      alive.isAlive = false;
+      client.ping();
+    }
+  }, 30_000);
+
   const unsubscribe = bus.onWs((event) => {
+    if (WS_REPLAY_TYPES.has(event.type)) {
+      wsReplayBuffer.push(event);
+      if (wsReplayBuffer.length > 200) {
+        wsReplayBuffer.shift();
+      }
+    }
     const payload = JSON.stringify(event);
     for (const client of wss.clients) {
       if (client.readyState === WebSocket.OPEN) {
@@ -506,7 +628,7 @@ export function createDaemonApp(): DaemonApp {
 
   async function listen(port = Number(process.env.AGENTPI_DAEMON_PORT ?? 43210)): Promise<{ port: number }> {
     await new Promise<void>((resolve) => {
-      server.listen(port, () => resolve());
+      server.listen(port, "127.0.0.1", () => resolve());
     });
     const address = server.address();
     if (address && typeof address === "object") {
@@ -519,6 +641,11 @@ export function createDaemonApp(): DaemonApp {
   }
 
   async function shutdown(): Promise<void> {
+    clearInterval(wsPingInterval);
+    if (terminalInputAuditTimer) {
+      clearTimeout(terminalInputAuditTimer);
+      flushTerminalInputAudit();
+    }
     unsubscribe();
     devServers.stopAll();
     await rpcPool.closeAll();

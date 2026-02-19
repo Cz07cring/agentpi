@@ -75,6 +75,34 @@ public enum AgentPiDefaults {
   /// Type: String (default: "pi")
   public static let piCommand = "\(keyPrefix)cli.piCommand"
 
+  /// Unified command template library for Claude/Codex/AgentPi.
+  /// Type: Data (JSON-encoded AgentCommandTemplateLibraryV1)
+  public static let commandTemplateLibrary = "\(keyPrefix)cli.templateLibrary"
+
+  /// Default template IDs keyed by provider stable key.
+  /// Type: Data (JSON-encoded [String: String])
+  public static let defaultTemplateIds = "\(keyPrefix)cli.defaultTemplateIds"
+
+  /// Last used template IDs keyed by provider stable key.
+  /// Type: Data (JSON-encoded [String: String])
+  public static let lastUsedTemplateIds = "\(keyPrefix)cli.lastUsedTemplateIds"
+
+  /// One-time migration flag that disables the builtin Pi RPC batch template.
+  /// Type: Bool (default: false)
+  public static let migratedPiRPCBatchTemplateDisabled = "\(keyPrefix)cli.migration.piRpcBatchTemplateDisabled.v1"
+
+  /// One-time migration flag that injects the builtin Pi Batch Fast template.
+  /// Type: Bool (default: false)
+  public static let migratedPiBatchFastTemplateAdded = "\(keyPrefix)cli.migration.piBatchFastTemplateAdded.v1"
+
+  /// One-time migration flag that removes deprecated --no-alt-screen from Codex builtin templates.
+  /// Type: Bool (default: false)
+  public static let migratedCodexNoAltScreenRemoved = "\(keyPrefix)cli.migration.codexNoAltScreenRemoved.v1"
+
+  /// One-time migration flag that injects mobile relay templates from legacy settings.
+  /// Type: Bool (default: false)
+  public static let migratedMobileRelayTemplatesAdded = "\(keyPrefix)cli.migration.mobileRelayTemplatesAdded.v1"
+
   /// Whether Claude command was set by developer (not user-editable)
   /// Type: Bool (default: false)
   public static let claudeCommandLockedByDeveloper = "\(keyPrefix)cli.claudeCommandLocked"
@@ -86,6 +114,32 @@ public enum AgentPiDefaults {
   /// Whether AgentPi command was set by developer (not user-editable)
   /// Type: Bool (default: false)
   public static let piCommandLockedByDeveloper = "\(keyPrefix)cli.piCommandLocked"
+
+  // MARK: - Mobile Relay (Happy)
+
+  /// Optional dedicated command for Claude mobile relay launch.
+  /// Type: String (default: "happy")
+  public static let mobileRelayClaudeCommand = "\(keyPrefix)mobileRelay.claudeCommand"
+
+  /// Optional dedicated command for Codex mobile relay launch.
+  /// Type: String (default: "happy codex")
+  public static let mobileRelayCodexCommand = "\(keyPrefix)mobileRelay.codexCommand"
+
+  /// Optional dedicated command for AgentPi mobile relay launch.
+  /// Type: String (default: "happy pi")
+  public static let mobileRelayPiCommand = "\(keyPrefix)mobileRelay.piCommand"
+
+  /// Persisted mobile relay tasks.
+  /// Type: Data (JSON-encoded [MobileRelayTask])
+  public static let mobileRelayTasks = "\(keyPrefix)mobileRelay.tasks"
+
+  /// Selected monitor detail tab (`hub`, `batch_runs`, `mobile_relay`).
+  /// Type: String (default: "hub")
+  public static let monitorDetailMode = "\(keyPrefix)monitor.detailMode"
+
+  /// Whether to switch to the mobile relay panel after launching a handoff task.
+  /// Type: Bool (default: true)
+  public static let mobileRelayAutoSwitchPanel = "\(keyPrefix)mobileRelay.autoSwitchPanel"
 
   /// Selected provider in side panel segmented control
   /// Type: String (default: "AgentPi")

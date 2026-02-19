@@ -2,6 +2,11 @@ import { EventEmitter } from "node:events";
 import type { WsEvent } from "@agentpi/protocol";
 
 export class DaemonEventBus extends EventEmitter {
+  constructor() {
+    super();
+    this.setMaxListeners(100);
+  }
+
   emitWs(event: WsEvent): void {
     this.emit("ws", event);
   }

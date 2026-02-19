@@ -7,7 +7,8 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
   error: 40,
 };
 
-const configuredLevel = (process.env.AGENTPI_LOG_LEVEL as LogLevel | undefined) ?? "info";
+const envLevel = process.env.AGENTPI_LOG_LEVEL as string | undefined;
+const configuredLevel: LogLevel = envLevel && envLevel in LEVEL_ORDER ? (envLevel as LogLevel) : "info";
 
 function shouldLog(level: LogLevel): boolean {
   return LEVEL_ORDER[level] >= LEVEL_ORDER[configuredLevel];

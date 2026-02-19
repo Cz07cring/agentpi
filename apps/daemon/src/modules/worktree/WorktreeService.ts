@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { NodeCommandRunner, type CommandRunner } from "../../lib/command-runner.js";
 
 export interface CreateWorktreeInput {
@@ -59,6 +59,9 @@ export class WorktreeService {
     if (!existsSync(normalized)) {
       throw new Error(`Worktree path does not exist: ${normalized}`);
     }
+    if (!existsSync(join(normalized, ".git"))) {
+      throw new Error(`Worktree path is not a git worktree: ${normalized}`);
+    }
 
     const result = await this.runner.run("git", ["worktree", "remove", "--force", normalized], {
       cwd: normalized,
@@ -82,6 +85,18 @@ export class WorktreeService {
   }
 
   decodeWorktreeId(id: string): string {
-    return Buffer.from(id, "base64url").toString("utf8");
+    try {
+      const decoded = Buffer.from(id, "base64url").toString("utf8");
+      if (!decoded || decoded.includes("\0") || /\.\.[\\/]/.test(decoded)) {
+        throw new Error("Invalid worktree id");
+      }
+      if (!isAbsolute(decoded)) {
+        throw new Error("Worktree id must decode to absolute path");
+      }
+      return decoded;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Invalid worktree id: ${message}`);
+    }
   }
 }

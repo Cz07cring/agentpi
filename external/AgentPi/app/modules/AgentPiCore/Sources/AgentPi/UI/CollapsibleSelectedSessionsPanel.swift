@@ -175,6 +175,14 @@ public struct CollapsibleSelectedSessionsPanel: View {
               case .pi: return piViewModel.deletingWorktreePath == item.session.projectPath
               }
             }(),
+            onMobileRelay: {
+              _ = MobileRelayService.shared.launch(
+                session: item.session,
+                sourceProvider: item.providerKind,
+                request: MobileRelayLaunchRequest(targetProvider: item.providerKind),
+                cliConfiguration: cliConfiguration(for: item.providerKind)
+              )
+            },
             onSelect: {
               primarySessionId = item.id
             }
@@ -277,6 +285,14 @@ public struct CollapsibleSelectedSessionsPanel: View {
       return codexViewModel.sessionCustomNames[item.session.id]
     case .pi:
       return piViewModel.sessionCustomNames[item.session.id]
+    }
+  }
+
+  private func cliConfiguration(for provider: SessionProviderKind) -> CLICommandConfiguration {
+    switch provider {
+    case .claude: return claudeViewModel.cliConfiguration
+    case .codex: return codexViewModel.cliConfiguration
+    case .pi: return piViewModel.cliConfiguration
     }
   }
 
@@ -432,6 +448,14 @@ public struct SingleProviderCollapsibleSelectedSessionsPanel: View {
             } : nil,
             isDeletingWorktree: item.session.isWorktree
               && viewModel.deletingWorktreePath == item.session.projectPath,
+            onMobileRelay: {
+              _ = MobileRelayService.shared.launch(
+                session: item.session,
+                sourceProvider: viewModel.providerKind,
+                request: MobileRelayLaunchRequest(targetProvider: viewModel.providerKind),
+                cliConfiguration: viewModel.cliConfiguration
+              )
+            },
             onSelect: {
               primarySessionId = item.id
             }

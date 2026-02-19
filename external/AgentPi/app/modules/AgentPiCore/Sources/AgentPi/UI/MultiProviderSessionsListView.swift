@@ -701,6 +701,13 @@ public struct MultiProviderSessionsListView: View {
               case .pi: return piViewModel.deletingWorktreePath == item.session.projectPath
               }
             }(),
+            onMobileRelay: {
+              _ = launchMobileRelay(
+                session: item.session,
+                sourceProvider: item.providerKind,
+                request: MobileRelayLaunchRequest(targetProvider: item.providerKind)
+              )
+            },
             onSelect: {
               primarySessionId = item.id
             }
@@ -962,6 +969,28 @@ public struct MultiProviderSessionsListView: View {
     case .claude: return claudeViewModel
     case .codex: return codexViewModel
     case .pi: return piViewModel
+    }
+  }
+
+  @discardableResult
+  private func launchMobileRelay(
+    session: CLISession,
+    sourceProvider: SessionProviderKind,
+    request: MobileRelayLaunchRequest
+  ) -> String {
+    MobileRelayService.shared.launch(
+      session: session,
+      sourceProvider: sourceProvider,
+      request: request,
+      cliConfiguration: cliConfiguration(for: request.targetProvider)
+    )
+  }
+
+  private func cliConfiguration(for provider: SessionProviderKind) -> CLICommandConfiguration {
+    switch provider {
+    case .claude: return claudeViewModel.cliConfiguration
+    case .codex: return codexViewModel.cliConfiguration
+    case .pi: return piViewModel.cliConfiguration
     }
   }
 

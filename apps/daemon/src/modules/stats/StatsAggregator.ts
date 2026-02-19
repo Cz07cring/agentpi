@@ -36,15 +36,24 @@ export class StatsAggregator {
     const usage = maybeMessage?.usage;
     if (!usage) return;
 
-    stats.input += Number(usage.input ?? 0);
-    stats.output += Number(usage.output ?? 0);
-    stats.cacheRead += Number(usage.cacheRead ?? 0);
-    stats.cacheWrite += Number(usage.cacheWrite ?? 0);
-    stats.totalTokens += Number(usage.totalTokens ?? 0);
+    const safeNum = (v: unknown): number => {
+      const n = Number(v ?? 0);
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    stats.input += safeNum(usage.input);
+    stats.output += safeNum(usage.output);
+    stats.cacheRead += safeNum(usage.cacheRead);
+    stats.cacheWrite += safeNum(usage.cacheWrite);
+    stats.totalTokens += safeNum(usage.totalTokens);
     const cost = usage.cost as Record<string, unknown> | undefined;
     if (cost) {
-      stats.cost += Number(cost.total ?? 0);
+      stats.cost += safeNum(cost.total);
     }
+  }
+
+  removeSession(sessionId: string): void {
+    this.stats.delete(sessionId);
   }
 
   getSessionStats(sessionId: string): Omit<SessionUsageStats, "activeDays"> & { activeDays: number } {

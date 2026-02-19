@@ -6,6 +6,9 @@
 //
 
 import ClaudeCodeSDK
+#if canImport(AppKit)
+import AppKit
+#endif
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -56,6 +59,7 @@ public struct MonitoringCardView: View {
   let showTerminal: Bool
   let initialPrompt: String?
   let initialInputText: String?
+  let commandTemplateId: String?
   let terminalKey: String?  // Key for terminal storage (session ID or "pending-{pendingId}")
   let viewModel: CLISessionsViewModel?
   var dangerouslySkipPermissions: Bool = false
@@ -65,6 +69,8 @@ public struct MonitoringCardView: View {
   let onCopySessionId: () -> Void
   let onOpenSessionFile: () -> Void
   let onRefreshTerminal: () -> Void
+  let onRequestMobileRelayQuick: ((CLISession, SessionProviderKind) -> Void)?
+  let onRequestMobileRelayAdvanced: ((CLISession, MobileRelayLaunchRequest) -> Void)?
   let onInlineRequestSubmit: ((String, CLISession) -> Void)?
   let onShowDiff: ((CLISession, String) -> Void)?
   let onShowPlan: ((CLISession, PlanState) -> Void)?
@@ -85,7 +91,12 @@ public struct MonitoringCardView: View {
   @State private var showingActionsPopover = false
   @State private var showingFilePicker = false
   @State private var showingNameSheet = false
+  @State private var showingMobileRelaySheet = false
+  @State private var relayTargetProvider: SessionProviderKind
+  @State private var relayTemplateId: String?
+  @State private var relayNote: String = ""
   @Environment(\.colorScheme) private var colorScheme
+  @Environment(\.openSettings) private var openSettings
 
   private struct PrimaryActionConfig {
     let icon: String
@@ -104,6 +115,7 @@ public struct MonitoringCardView: View {
     showTerminal: Bool = false,
     initialPrompt: String? = nil,
     initialInputText: String? = nil,
+    commandTemplateId: String? = nil,
     terminalKey: String? = nil,
     viewModel: CLISessionsViewModel? = nil,
     dangerouslySkipPermissions: Bool = false,
@@ -113,6 +125,8 @@ public struct MonitoringCardView: View {
     onCopySessionId: @escaping () -> Void,
     onOpenSessionFile: @escaping () -> Void,
     onRefreshTerminal: @escaping () -> Void,
+    onRequestMobileRelayQuick: ((CLISession, SessionProviderKind) -> Void)? = nil,
+    onRequestMobileRelayAdvanced: ((CLISession, MobileRelayLaunchRequest) -> Void)? = nil,
     onInlineRequestSubmit: ((String, CLISession) -> Void)? = nil,
     onShowDiff: ((CLISession, String) -> Void)? = nil,
     onShowPlan: ((CLISession, PlanState) -> Void)? = nil,
@@ -134,6 +148,7 @@ public struct MonitoringCardView: View {
     self.showTerminal = showTerminal
     self.initialPrompt = initialPrompt
     self.initialInputText = initialInputText
+    self.commandTemplateId = commandTemplateId
     self.terminalKey = terminalKey
     self.viewModel = viewModel
     self.dangerouslySkipPermissions = dangerouslySkipPermissions
@@ -143,6 +158,8 @@ public struct MonitoringCardView: View {
     self.onCopySessionId = onCopySessionId
     self.onOpenSessionFile = onOpenSessionFile
     self.onRefreshTerminal = onRefreshTerminal
+    self.onRequestMobileRelayQuick = onRequestMobileRelayQuick
+    self.onRequestMobileRelayAdvanced = onRequestMobileRelayAdvanced
     self.onInlineRequestSubmit = onInlineRequestSubmit
     self.onShowDiff = onShowDiff
     self.onShowPlan = onShowPlan
@@ -154,6 +171,7 @@ public struct MonitoringCardView: View {
     self.isPrimarySession = isPrimarySession
     self.showPrimaryIndicator = showPrimaryIndicator
     self.isSidePanelOpen = isSidePanelOpen
+    self._relayTargetProvider = State(initialValue: providerKind)
   }
 
   public var body: some View {
@@ -238,7 +256,8 @@ public struct MonitoringCardView: View {
         pendingToolUse: item.pendingToolUse,
         claudeClient: claudeClient,
         onDismiss: { pendingChangesSheetItem = nil },
-        onApprovalResponse: { response, session in
+        onApprovalResponse: { approved, session in
+          let response = approvalPrompt(for: approved)
           viewModel?.showTerminalWithPrompt(for: session, prompt: response)
         }
       )
@@ -260,6 +279,9 @@ public struct MonitoringCardView: View {
         onDismiss: { showingNameSheet = false }
       )
     }
+    .sheet(isPresented: $showingMobileRelaySheet) {
+      mobileRelayAdvancedSheet
+    }
     .fileImporter(
       isPresented: $showingFilePicker,
       allowedContentTypes: [.image, .pdf, .plainText, .data],
@@ -276,6 +298,15 @@ public struct MonitoringCardView: View {
       return true
     default:
       return false
+    }
+  }
+
+  private func approvalPrompt(for approved: Bool) -> String {
+    switch providerKind {
+    case .claude:
+      return approved ? "1" : "3"
+    case .codex, .pi:
+      return approved ? "y" : "n"
     }
   }
 
@@ -304,15 +335,12 @@ public struct MonitoringCardView: View {
           guard let data = data, error == nil else { return }
 
           Task { @MainActor in
-            let tempURL = FileManager.default.temporaryDirectory
-              .appendingPathComponent("screenshot_\(UUID().uuidString).png")
-            do {
-              try data.write(to: tempURL)
-              let quotedPath = tempURL.path.contains(" ") ? "\"\(tempURL.path)\"" : tempURL.path
-              viewModel.typeToTerminal(forKey: key, text: quotedPath + " ")
-            } catch {
-              print("Failed to save dropped screenshot: \(error)")
+            guard let tempURL = writeImageDataToTemp(data) else {
+              print("Failed to decode dropped screenshot")
+              return
             }
+            let quotedPath = tempURL.path.contains(" ") ? "\"\(tempURL.path)\"" : tempURL.path
+            viewModel.typeToTerminal(forKey: key, text: quotedPath + " ")
           }
         }
       }
@@ -322,15 +350,12 @@ public struct MonitoringCardView: View {
           guard let data = data, error == nil else { return }
 
           Task { @MainActor in
-            let tempURL = FileManager.default.temporaryDirectory
-              .appendingPathComponent("screenshot_\(UUID().uuidString).tiff")
-            do {
-              try data.write(to: tempURL)
-              let quotedPath = tempURL.path.contains(" ") ? "\"\(tempURL.path)\"" : tempURL.path
-              viewModel.typeToTerminal(forKey: key, text: quotedPath + " ")
-            } catch {
-              print("Failed to save dropped screenshot: \(error)")
+            guard let tempURL = writeImageDataToTemp(data) else {
+              print("Failed to decode dropped screenshot")
+              return
             }
+            let quotedPath = tempURL.path.contains(" ") ? "\"\(tempURL.path)\"" : tempURL.path
+            viewModel.typeToTerminal(forKey: key, text: quotedPath + " ")
           }
         }
       }
@@ -340,15 +365,12 @@ public struct MonitoringCardView: View {
           guard let data = data, error == nil else { return }
 
           Task { @MainActor in
-            let tempURL = FileManager.default.temporaryDirectory
-              .appendingPathComponent("dropped_image_\(UUID().uuidString).png")
-            do {
-              try data.write(to: tempURL)
-              let quotedPath = tempURL.path.contains(" ") ? "\"\(tempURL.path)\"" : tempURL.path
-              viewModel.typeToTerminal(forKey: key, text: quotedPath + " ")
-            } catch {
-              print("Failed to save dropped image: \(error)")
+            guard let tempURL = writeImageDataToTemp(data) else {
+              print("Failed to decode dropped image")
+              return
             }
+            let quotedPath = tempURL.path.contains(" ") ? "\"\(tempURL.path)\"" : tempURL.path
+            viewModel.typeToTerminal(forKey: key, text: quotedPath + " ")
           }
         }
       }
@@ -388,6 +410,28 @@ public struct MonitoringCardView: View {
       }
     case .failure(let error):
       print("File picker error: \(error.localizedDescription)")
+    }
+  }
+
+  private func writeImageDataToTemp(_ data: Data) -> URL? {
+    guard let image = NSImage(data: data) else { return nil }
+    return writeImageToTemp(image)
+  }
+
+  private func writeImageToTemp(_ image: NSImage) -> URL? {
+    guard let tiff = image.tiffRepresentation,
+          let bitmap = NSBitmapImageRep(data: tiff),
+          let pngData = bitmap.representation(using: .png, properties: [:]) else {
+      return nil
+    }
+
+    let tempURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent("dropped_image_\(UUID().uuidString).png")
+    do {
+      try pngData.write(to: tempURL)
+      return tempURL
+    } catch {
+      return nil
     }
   }
 
@@ -695,6 +739,46 @@ public struct MonitoringCardView: View {
       .buttonStyle(.plain)
       .help(L10n.t("monitoring.help.view_diff", "View git unstaged changes"))
 
+      // Mobile relay one-click handoff + advanced options
+      if canShowMobileRelayControls {
+        HStack(spacing: 0) {
+          Button(action: {
+            onRequestMobileRelayQuick?(session, providerKind)
+          }) {
+            HStack(spacing: 4) {
+              Image(systemName: "iphone.gen3")
+                .font(.caption2)
+              Text(L10n.t("monitoring.mobile_relay", "Handoff"))
+                .font(.caption2)
+            }
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.secondary.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+          }
+          .buttonStyle(.plain)
+          .help(mobileRelayQuickHelpText)
+          .disabled(!canLaunchMobileRelayQuick)
+
+          Button(action: {
+            seedMobileRelayAdvancedDefaults()
+            showingMobileRelaySheet = true
+          }) {
+            Image(systemName: "chevron.down")
+              .font(.caption2)
+              .foregroundColor(.secondary)
+              .padding(.horizontal, 6)
+              .padding(.vertical, 4)
+              .background(Color.secondary.opacity(0.1))
+              .clipShape(RoundedRectangle(cornerRadius: 4))
+          }
+          .buttonStyle(.plain)
+          .help(mobileRelayAdvancedHelpText)
+          .disabled(!canLaunchMobileRelayAdvanced)
+        }
+      }
+
       // Web preview button (only visible for web projects)
       let framework = ProjectFramework.detect(at: session.projectPath)
       if framework.requiresDevServer
@@ -747,6 +831,144 @@ public struct MonitoringCardView: View {
     }
   }
 
+  private var canShowMobileRelayControls: Bool {
+    onRequestMobileRelayQuick != nil
+  }
+
+  private var isMobileRelaySessionReady: Bool {
+    !session.projectPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  private var canLaunchMobileRelayQuick: Bool {
+    canShowMobileRelayControls && isMobileRelaySessionReady && hasCurrentProviderRelayTemplate
+  }
+
+  private var canLaunchMobileRelayAdvanced: Bool {
+    canShowMobileRelayControls && isMobileRelaySessionReady && hasAnyRelayTemplate
+  }
+
+  private var mobileRelayQuickHelpText: String {
+    if !isMobileRelaySessionReady {
+      return L10n.t("monitoring.help.mobile_relay_pending", "Mobile handoff is available after the session is ready.")
+    }
+    if !hasCurrentProviderRelayTemplate {
+      return L10n.t("settings.mobile_relay.no_template", "No mobile relay template configured for this provider.")
+    }
+    return L10n.t("monitoring.help.mobile_relay", "One-click handoff to mobile relay")
+  }
+
+  private var mobileRelayAdvancedHelpText: String {
+    if !isMobileRelaySessionReady {
+      return L10n.t("monitoring.help.mobile_relay_pending", "Mobile handoff is available after the session is ready.")
+    }
+    if !hasAnyRelayTemplate {
+      return L10n.t("mobile_relay.advanced.no_template", "No template")
+    }
+    return L10n.t("monitoring.help.mobile_relay_advanced", "Choose provider/template/note before handoff")
+  }
+
+  private var hasCurrentProviderRelayTemplate: Bool {
+    !CommandTemplateService.shared.templates(
+      for: providerKind,
+      intent: .mobileRelay,
+      includeDisabled: false
+    ).isEmpty
+  }
+
+  private var hasAnyRelayTemplate: Bool {
+    SessionProviderKind.allCases.contains {
+      !CommandTemplateService.shared.templates(for: $0, intent: .mobileRelay, includeDisabled: false).isEmpty
+    }
+  }
+
+  private var relayTemplates: [AgentCommandTemplateV1] {
+    CommandTemplateService.shared.templates(
+      for: relayTargetProvider,
+      intent: .mobileRelay,
+      includeDisabled: false
+    )
+  }
+
+  private func seedMobileRelayAdvancedDefaults() {
+    relayTargetProvider = providerKind
+    let defaultTemplate = CommandTemplateService.shared.defaultTemplate(
+      for: providerKind,
+      intent: .mobileRelay
+    )
+    relayTemplateId = defaultTemplate?.id
+    relayNote = ""
+  }
+
+  private var mobileRelayAdvancedSheet: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text(L10n.t("mobile_relay.advanced.title", "Mobile Handoff"))
+        .font(.headline)
+
+      Picker(L10n.t("mobile_relay.advanced.provider", "Target Provider"), selection: $relayTargetProvider) {
+        ForEach(SessionProviderKind.allCases, id: \.self) { provider in
+          Text(provider.rawValue).tag(provider)
+        }
+      }
+      .onChange(of: relayTargetProvider) { _, newProvider in
+        relayTemplateId = CommandTemplateService.shared.defaultTemplate(for: newProvider, intent: .mobileRelay)?.id
+      }
+
+      Picker(L10n.t("mobile_relay.advanced.template", "Template"), selection: Binding(
+        get: { relayTemplateId ?? "" },
+        set: { relayTemplateId = $0.isEmpty ? nil : $0 }
+      )) {
+        if relayTemplates.isEmpty {
+          Text(L10n.t("mobile_relay.advanced.no_template", "No template")).tag("")
+        } else {
+          ForEach(relayTemplates, id: \.id) { template in
+            Text(template.name).tag(template.id)
+          }
+        }
+      }
+
+      TextField(
+        L10n.t("mobile_relay.advanced.note", "Note (optional)"),
+        text: $relayNote
+      )
+      .textFieldStyle(.roundedBorder)
+
+      if relayTemplates.isEmpty {
+        HStack(spacing: 8) {
+          Text(L10n.t("mobile_relay.advanced.no_template", "No template"))
+            .font(.caption)
+            .foregroundColor(.secondary)
+          Button(L10n.t("mobile_relay.advanced.create_template", "Create Template")) {
+            openSettings()
+          }
+          .buttonStyle(.bordered)
+          .controlSize(.small)
+        }
+      }
+
+      HStack {
+        Spacer()
+        Button(L10n.t("common.cancel", "Cancel")) {
+          showingMobileRelaySheet = false
+        }
+        Button(L10n.t("mobile_relay.advanced.launch", "Launch")) {
+          onRequestMobileRelayAdvanced?(
+            session,
+            MobileRelayLaunchRequest(
+              targetProvider: relayTargetProvider,
+              templateId: relayTemplateId,
+              note: relayNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : relayNote
+            )
+          )
+          showingMobileRelaySheet = false
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(relayTemplates.isEmpty)
+      }
+    }
+    .padding(16)
+    .frame(minWidth: 460)
+  }
+
   // MARK: - Monitor Content
 
   @ViewBuilder
@@ -759,6 +981,7 @@ public struct MonitoringCardView: View {
           sessionFilePath: session.sessionFilePath,
           projectPath: session.projectPath,
           cliConfiguration: viewModel?.cliConfiguration ?? .claudeDefault,
+          commandTemplateId: commandTemplateId,
           initialPrompt: initialPrompt,
           initialInputText: initialInputText,
           viewModel: viewModel,

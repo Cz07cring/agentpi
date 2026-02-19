@@ -45,11 +45,22 @@ export interface CommandAuditLogEntry {
 
 export class PersistenceStore {
   private readonly db: DatabaseSync;
+  private readonly stmtCache = new Map<string, ReturnType<DatabaseSync["prepare"]>>();
 
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath);
     this.migrate();
+  }
+
+  /** Return a cached prepared statement, creating it on first access. */
+  private stmt(key: string, sql: string): ReturnType<DatabaseSync["prepare"]> {
+    let s = this.stmtCache.get(key);
+    if (!s) {
+      s = this.db.prepare(sql);
+      this.stmtCache.set(key, s);
+    }
+    return s;
   }
 
   private migrate(): void {
@@ -103,21 +114,23 @@ export class PersistenceStore {
         result TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+
+      CREATE INDEX IF NOT EXISTS idx_search_entries_session_id ON search_entries(session_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON command_audit_logs(created_at);
     `);
   }
 
   upsertSession(session: StoredSession): void {
-    const statement = this.db.prepare(`
-      INSERT INTO sessions (id, cwd, runtime_version, runtime_channel, created_at, last_state_json)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        cwd = excluded.cwd,
-        runtime_version = excluded.runtime_version,
-        runtime_channel = excluded.runtime_channel,
-        last_state_json = excluded.last_state_json
-    `);
-
-    statement.run(
+    this.stmt(
+      "upsertSession",
+      `INSERT INTO sessions (id, cwd, runtime_version, runtime_channel, created_at, last_state_json)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         cwd = excluded.cwd,
+         runtime_version = excluded.runtime_version,
+         runtime_channel = excluded.runtime_channel,
+         last_state_json = excluded.last_state_json`,
+    ).run(
       session.id,
       session.cwd,
       session.runtimeVersion,
@@ -128,12 +141,11 @@ export class PersistenceStore {
   }
 
   getSession(id: string): StoredSession | null {
-    const row = this.db
-      .prepare(
-        `SELECT id, cwd, runtime_version, runtime_channel, created_at, last_state_json
-         FROM sessions WHERE id = ?`,
-      )
-      .get(id) as
+    const row = this.stmt(
+      "getSession",
+      `SELECT id, cwd, runtime_version, runtime_channel, created_at, last_state_json
+       FROM sessions WHERE id = ?`,
+    ).get(id) as
       | {
           id: string;
           cwd: string;
@@ -156,12 +168,11 @@ export class PersistenceStore {
   }
 
   listSessions(): StoredSession[] {
-    const rows = this.db
-      .prepare(
-        `SELECT id, cwd, runtime_version, runtime_channel, created_at, last_state_json
-         FROM sessions ORDER BY created_at DESC`,
-      )
-      .all() as Array<{
+    const rows = this.stmt(
+      "listSessions",
+      `SELECT id, cwd, runtime_version, runtime_channel, created_at, last_state_json
+       FROM sessions ORDER BY created_at DESC`,
+    ).all() as Array<{
       id: string;
       cwd: string;
       runtime_version: string;
@@ -181,15 +192,18 @@ export class PersistenceStore {
   }
 
   insertWorkflow(workflow: StoredWorkflow): void {
-    this.db
-      .prepare(`INSERT INTO workflows (id, graph_json, created_at) VALUES (?, ?, ?)`)
-      .run(workflow.id, workflow.graphJson, workflow.createdAt);
+    this.stmt("insertWorkflow", `INSERT INTO workflows (id, graph_json, created_at) VALUES (?, ?, ?)`).run(
+      workflow.id,
+      workflow.graphJson,
+      workflow.createdAt,
+    );
   }
 
   getWorkflow(id: string): StoredWorkflow | null {
-    const row = this.db
-      .prepare(`SELECT id, graph_json, created_at FROM workflows WHERE id = ?`)
-      .get(id) as { id: string; graph_json: string; created_at: string } | undefined;
+    const row = this.stmt(
+      "getWorkflow",
+      `SELECT id, graph_json, created_at FROM workflows WHERE id = ?`,
+    ).get(id) as { id: string; graph_json: string; created_at: string } | undefined;
 
     if (!row) return null;
     return {
@@ -200,21 +214,21 @@ export class PersistenceStore {
   }
 
   upsertWorkflowRun(run: StoredWorkflowRun): void {
-    this.db
-      .prepare(`
-        INSERT INTO workflow_runs (id, workflow_id, state_json, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          state_json = excluded.state_json,
-          updated_at = excluded.updated_at
-      `)
-      .run(run.id, run.workflowId, run.stateJson, run.createdAt, run.updatedAt);
+    this.stmt(
+      "upsertWorkflowRun",
+      `INSERT INTO workflow_runs (id, workflow_id, state_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         state_json = excluded.state_json,
+         updated_at = excluded.updated_at`,
+    ).run(run.id, run.workflowId, run.stateJson, run.createdAt, run.updatedAt);
   }
 
   getWorkflowRun(id: string): StoredWorkflowRun | null {
-    const row = this.db
-      .prepare(`SELECT id, workflow_id, state_json, created_at, updated_at FROM workflow_runs WHERE id = ?`)
-      .get(id) as
+    const row = this.stmt(
+      "getWorkflowRun",
+      `SELECT id, workflow_id, state_json, created_at, updated_at FROM workflow_runs WHERE id = ?`,
+    ).get(id) as
       | {
           id: string;
           workflow_id: string;
@@ -235,27 +249,21 @@ export class PersistenceStore {
   }
 
   upsertSessionRuntimeBinding(binding: StoredSessionRuntimeBinding): void {
-    this.db
-      .prepare(`
-        INSERT INTO session_runtime_bindings (
-          session_id,
-          runtime_session_id,
-          runtime_version,
-          status,
-          is_streaming,
-          last_event_at,
-          updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(session_id) DO UPDATE SET
-          runtime_session_id = excluded.runtime_session_id,
-          runtime_version = excluded.runtime_version,
-          status = excluded.status,
-          is_streaming = excluded.is_streaming,
-          last_event_at = excluded.last_event_at,
-          updated_at = excluded.updated_at
-      `)
-      .run(
+    this.stmt(
+      "upsertSessionRuntimeBinding",
+      `INSERT INTO session_runtime_bindings (
+         session_id, runtime_session_id, runtime_version, status,
+         is_streaming, last_event_at, updated_at
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         runtime_session_id = excluded.runtime_session_id,
+         runtime_version = excluded.runtime_version,
+         status = excluded.status,
+         is_streaming = excluded.is_streaming,
+         last_event_at = excluded.last_event_at,
+         updated_at = excluded.updated_at`,
+    ).run(
         binding.sessionId,
         binding.runtimeSessionId,
         binding.runtimeVersion,
@@ -267,12 +275,11 @@ export class PersistenceStore {
   }
 
   getSessionRuntimeBinding(sessionId: string): StoredSessionRuntimeBinding | null {
-    const row = this.db
-      .prepare(
-        `SELECT session_id, runtime_session_id, runtime_version, status, is_streaming, last_event_at, updated_at
-         FROM session_runtime_bindings WHERE session_id = ?`,
-      )
-      .get(sessionId) as
+    const row = this.stmt(
+      "getSessionRuntimeBinding",
+      `SELECT session_id, runtime_session_id, runtime_version, status, is_streaming, last_event_at, updated_at
+       FROM session_runtime_bindings WHERE session_id = ?`,
+    ).get(sessionId) as
       | {
           session_id: string;
           runtime_session_id: string | null;
@@ -296,22 +303,26 @@ export class PersistenceStore {
   }
 
   indexSearchEntry(sessionId: string, textValue: string, filePath: string | null): void {
-    this.db
-      .prepare(`INSERT INTO search_entries (session_id, text_value, file_path, created_at) VALUES (?, ?, ?, ?)`)
-      .run(sessionId, textValue, filePath, new Date().toISOString());
+    this.stmt(
+      "indexSearchEntry",
+      `INSERT INTO search_entries (session_id, text_value, file_path, created_at)
+       SELECT ?, ?, ?, ?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM search_entries WHERE session_id = ? AND text_value = ?
+       )`,
+    ).run(sessionId, textValue, filePath, new Date().toISOString(), sessionId, textValue);
   }
 
   search(query: string, limit = 50): Array<{ sessionId: string; text: string; filePath: string | null }> {
     const normalized = `%${query.trim().toLowerCase()}%`;
-    const rows = this.db
-      .prepare(
-        `SELECT session_id, text_value, file_path
-         FROM search_entries
-         WHERE lower(text_value) LIKE ?
-         ORDER BY id DESC
-         LIMIT ?`,
-      )
-      .all(normalized, limit) as Array<{ session_id: string; text_value: string; file_path: string | null }>;
+    const rows = this.stmt(
+      "search",
+      `SELECT session_id, text_value, file_path
+       FROM search_entries
+       WHERE lower(text_value) LIKE ?
+       ORDER BY id DESC
+       LIMIT ?`,
+    ).all(normalized, limit) as Array<{ session_id: string; text_value: string; file_path: string | null }>;
 
     return rows.map((row) => ({
       sessionId: row.session_id,
@@ -321,11 +332,16 @@ export class PersistenceStore {
   }
 
   insertAuditLog(entry: CommandAuditLogEntry): void {
-    this.db
-      .prepare(
-        `INSERT INTO command_audit_logs (actor, action, params_json, result, created_at)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .run(entry.actor, entry.action, entry.paramsJson, entry.result, entry.createdAt);
+    this.stmt(
+      "insertAuditLog",
+      `INSERT INTO command_audit_logs (actor, action, params_json, result, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(entry.actor, entry.action, entry.paramsJson, entry.result, entry.createdAt);
+  }
+
+  pruneAuditLogs(retentionDays = 30): number {
+    const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
+    const result = this.stmt("pruneAuditLogs", `DELETE FROM command_audit_logs WHERE created_at < ?`).run(cutoff);
+    return Number(result.changes);
   }
 }

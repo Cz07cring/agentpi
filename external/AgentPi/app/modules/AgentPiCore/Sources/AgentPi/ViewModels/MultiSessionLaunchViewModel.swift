@@ -105,6 +105,8 @@ public final class MultiSessionLaunchViewModel {
   private let piViewModel: CLISessionsViewModel
   private let worktreeService: GitWorktreeService
   private let intelligenceViewModel: IntelligenceViewModel?
+  private let templateService: CommandTemplateService
+  private let batchRunnerService: BatchTaskRunnerService
 
   // MARK: - Form State
 
@@ -121,6 +123,7 @@ public final class MultiSessionLaunchViewModel {
   public var singleBranchName: String = ""
   public var baseBranch: RemoteBranch?
   public var selectedRepository: SelectedRepository?
+  public var selectedLaunchTemplateIds: [String: String] = [:]
 
   // MARK: - Loaded Data
 
@@ -184,6 +187,13 @@ public final class MultiSessionLaunchViewModel {
     canRetryFailedLaunch && (launchError?.contains("GIT_WORKTREE_TIMEOUT") == true)
   }
 
+  public var hasAnyBatchTemplateSelected: Bool {
+    selectedProviders.contains { provider in
+      guard let template = selectedLaunchTemplate(for: provider) else { return false }
+      return template.executionKind == .batchRun || template.intent == .batchRun
+    }
+  }
+
   public var isValid: Bool {
     let hasRepo = selectedRepository != nil
     switch launchMode {
@@ -222,13 +232,78 @@ public final class MultiSessionLaunchViewModel {
     codexViewModel: CLISessionsViewModel,
     piViewModel: CLISessionsViewModel,
     worktreeService: GitWorktreeService = GitWorktreeService(),
-    intelligenceViewModel: IntelligenceViewModel? = nil
+    intelligenceViewModel: IntelligenceViewModel? = nil,
+    templateService: CommandTemplateService,
+    batchRunnerService: BatchTaskRunnerService
   ) {
     self.claudeViewModel = claudeViewModel
     self.codexViewModel = codexViewModel
     self.piViewModel = piViewModel
     self.worktreeService = worktreeService
     self.intelligenceViewModel = intelligenceViewModel
+    self.templateService = templateService
+    self.batchRunnerService = batchRunnerService
+    seedSelectedLaunchTemplates()
+  }
+
+  public convenience init(
+    claudeViewModel: CLISessionsViewModel,
+    codexViewModel: CLISessionsViewModel,
+    piViewModel: CLISessionsViewModel,
+    worktreeService: GitWorktreeService = GitWorktreeService(),
+    intelligenceViewModel: IntelligenceViewModel? = nil
+  ) {
+    self.init(
+      claudeViewModel: claudeViewModel,
+      codexViewModel: codexViewModel,
+      piViewModel: piViewModel,
+      worktreeService: worktreeService,
+      intelligenceViewModel: intelligenceViewModel,
+      templateService: .shared,
+      batchRunnerService: .shared
+    )
+  }
+
+  public func templatesForLaunch(provider: SessionProviderKind) -> [AgentCommandTemplateV1] {
+    templateService.templates(for: provider, includeDisabled: false)
+      .filter { $0.intent == .startSession || $0.intent == .batchRun }
+  }
+
+  public func selectedLaunchTemplate(for provider: SessionProviderKind) -> AgentCommandTemplateV1? {
+    if let selectedId = selectedLaunchTemplateIds[provider.stableKey],
+      let selected = lookupLaunchTemplate(for: provider, preferredId: selectedId)
+    {
+      return selected
+    }
+    if let lastUsed = templateService.lastUsedTemplate(for: provider),
+      lastUsed.enabled,
+      (lastUsed.intent == .startSession || lastUsed.intent == .batchRun)
+    {
+      return lastUsed
+    }
+    if let defaultStart = templateService.defaultTemplate(for: provider, intent: .startSession),
+      defaultStart.enabled
+    {
+      return defaultStart
+    }
+    if let fallback = templateService.defaultTemplate(for: provider), fallback.enabled {
+      return fallback
+    }
+    return nil
+  }
+
+  public func selectedLaunchTemplateId(for provider: SessionProviderKind) -> String? {
+    selectedLaunchTemplateIds[provider.stableKey]
+  }
+
+  public func setSelectedLaunchTemplate(id: String, for provider: SessionProviderKind) {
+    guard let template = templateService.template(by: id),
+      template.provider == provider,
+      template.enabled,
+      template.intent == .startSession || template.intent == .batchRun
+    else { return }
+    selectedLaunchTemplateIds[provider.stableKey] = id
+    templateService.setLastUsedTemplate(id: id, for: provider)
   }
 
   private func beginLaunchAttempt() -> UInt64 {
@@ -270,6 +345,69 @@ public final class MultiSessionLaunchViewModel {
       }
     }
     return "LAUNCH_FAILED"
+  }
+
+  private func seedSelectedLaunchTemplates() {
+    for provider in SessionProviderKind.allCases {
+      if let template = templateService.lastUsedTemplate(for: provider),
+        template.enabled,
+        (template.intent == .startSession || template.intent == .batchRun)
+      {
+        selectedLaunchTemplateIds[provider.stableKey] = template.id
+        continue
+      }
+      if let defaultStart = templateService.defaultTemplate(for: provider, intent: .startSession) {
+        selectedLaunchTemplateIds[provider.stableKey] = defaultStart.id
+        continue
+      }
+      if let fallback = templateService.defaultTemplate(for: provider) {
+        selectedLaunchTemplateIds[provider.stableKey] = fallback.id
+      }
+    }
+  }
+
+  private func resolvedLaunchTemplate(for provider: SessionProviderKind) -> AgentCommandTemplateV1? {
+    if let selectedId = selectedLaunchTemplateIds[provider.stableKey],
+      let selected = lookupLaunchTemplate(for: provider, preferredId: selectedId)
+    {
+      return selected
+    }
+
+    if let lastUsed = templateService.lastUsedTemplate(for: provider),
+      lastUsed.enabled,
+      (lastUsed.intent == .startSession || lastUsed.intent == .batchRun)
+    {
+      selectedLaunchTemplateIds[provider.stableKey] = lastUsed.id
+      return lastUsed
+    }
+
+    if let defaultStart = templateService.defaultTemplate(for: provider, intent: .startSession),
+      defaultStart.enabled
+    {
+      selectedLaunchTemplateIds[provider.stableKey] = defaultStart.id
+      return defaultStart
+    }
+
+    if let fallback = templateService.defaultTemplate(for: provider), fallback.enabled {
+      selectedLaunchTemplateIds[provider.stableKey] = fallback.id
+      return fallback
+    }
+
+    return nil
+  }
+
+  private func lookupLaunchTemplate(
+    for provider: SessionProviderKind,
+    preferredId: String
+  ) -> AgentCommandTemplateV1? {
+    guard let selected = templateService.template(by: preferredId),
+      selected.provider == provider,
+      selected.enabled,
+      (selected.intent == .startSession || selected.intent == .batchRun)
+    else {
+      return nil
+    }
+    return selected
   }
 
   private func finishManualLaunch(attemptId: UInt64) {
@@ -535,6 +673,22 @@ public final class MultiSessionLaunchViewModel {
       return
     }
 
+    let templateByProvider = Dictionary(
+      uniqueKeysWithValues: providers.compactMap { provider in
+        resolvedLaunchTemplate(for: provider).map { (provider, $0) }
+      }
+    )
+    let missingTemplateProviders = providers.filter { templateByProvider[$0] == nil }
+    guard missingTemplateProviders.isEmpty else {
+      launchError = L10n.f(
+        "launch.error.missing_template_format",
+        "No command template configured for: %@",
+        missingTemplateProviders.map(\.rawValue).joined(separator: ", ")
+      )
+      finishManualLaunch(attemptId: attemptId)
+      return
+    }
+
     let trimmedPrompt = sharedPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
     let attachmentPaths = attachedFiles.map { $0.quotedPath }.joined(separator: " ")
     let initialPrompt: String? = {
@@ -547,37 +701,63 @@ public final class MultiSessionLaunchViewModel {
     let initialInputText: String? =
       trimmedPrompt.isEmpty && !attachmentPaths.isEmpty ? "\(attachmentPaths) " : nil
     let repoPath = gitRoot
+    let interactiveProviders = providers.filter { provider in
+      guard let template = templateByProvider[provider] else { return false }
+      return template.executionKind == .interactiveSession && template.intent != .batchRun
+    }
+    let batchProviders = providers.filter { provider in
+      guard let template = templateByProvider[provider] else { return false }
+      return template.executionKind == .batchRun || template.intent == .batchRun
+    }
+
+    if !batchProviders.isEmpty {
+      runBatchTemplates(
+        providers: batchProviders,
+        templateByProvider: templateByProvider,
+        repoPath: repoPath,
+        prompt: initialPrompt
+      )
+    }
+
+    if interactiveProviders.isEmpty {
+      finishManualLaunch(attemptId: attemptId)
+      return
+    }
 
     switch workMode {
     case .local:
       await launchLocalSessions(
-        providers: providers,
+        providers: interactiveProviders,
+        templateByProvider: templateByProvider,
         initialPrompt: initialPrompt,
         initialInputText: initialInputText,
         repoPath: repoPath,
         attemptId: attemptId
       )
     case .worktree:
-      if providers.count > 1 {
+      if interactiveProviders.count > 1 {
         let hasAnyBranch = !claudeBranchName.isEmpty || !codexBranchName.isEmpty || !piBranchName.isEmpty
         if !hasAnyBranch {
-          autoGenerateBranchNames(for: providers)
+          autoGenerateBranchNames(for: interactiveProviders)
         }
       } else if singleBranchName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        autoGenerateBranchNames(for: providers)
+        autoGenerateBranchNames(for: interactiveProviders)
       }
-      if providers.count > 1 {
+      if interactiveProviders.count > 1 {
         await launchMultipleProviders(
-          providers: providers,
+          providers: interactiveProviders,
+          templateByProvider: templateByProvider,
           initialPrompt: initialPrompt,
           initialInputText: initialInputText,
           repoPath: repoPath,
           attemptId: attemptId
         )
-      } else if let provider = providers.first {
+      } else if let provider = interactiveProviders.first {
         switch provider {
         case .claude:
           await launchSingleProvider(
+            provider: .claude,
+            commandTemplateId: templateByProvider[.claude]?.id,
             initialPrompt: initialPrompt,
             initialInputText: initialInputText,
             repoPath: repoPath,
@@ -589,6 +769,8 @@ public final class MultiSessionLaunchViewModel {
           )
         case .codex:
           await launchSingleProvider(
+            provider: .codex,
+            commandTemplateId: templateByProvider[.codex]?.id,
             initialPrompt: initialPrompt,
             initialInputText: initialInputText,
             repoPath: repoPath,
@@ -599,6 +781,8 @@ public final class MultiSessionLaunchViewModel {
           )
         case .pi:
           await launchSingleProvider(
+            provider: .pi,
+            commandTemplateId: templateByProvider[.pi]?.id,
             initialPrompt: initialPrompt,
             initialInputText: initialInputText,
             repoPath: repoPath,
@@ -899,6 +1083,7 @@ public final class MultiSessionLaunchViewModel {
   /// Starts sessions directly in repo directory without worktree creation
   private func launchLocalSessions(
     providers: [SessionProviderKind],
+    templateByProvider: [SessionProviderKind: AgentCommandTemplateV1],
     initialPrompt: String?,
     initialInputText: String?,
     repoPath: String,
@@ -927,6 +1112,9 @@ public final class MultiSessionLaunchViewModel {
     )
 
     if providers.contains(.claude) {
+      if let templateId = templateByProvider[.claude]?.id {
+        templateService.setLastUsedTemplate(id: templateId, for: .claude)
+      }
       claudeViewModel.refresh()
       try? await Task.sleep(for: .milliseconds(300))
       guard isActiveLaunchAttempt(attemptId) else { return }
@@ -934,11 +1122,15 @@ public final class MultiSessionLaunchViewModel {
         worktree,
         initialPrompt: initialPrompt,
         initialInputText: initialInputText,
-        dangerouslySkipPermissions: claudeMode.dangerouslySkipPermissions
+        dangerouslySkipPermissions: claudeMode.dangerouslySkipPermissions,
+        commandTemplateId: templateByProvider[.claude]?.id
       )
     }
 
     if providers.contains(.codex) {
+      if let templateId = templateByProvider[.codex]?.id {
+        templateService.setLastUsedTemplate(id: templateId, for: .codex)
+      }
       try? await Task.sleep(for: .milliseconds(500))
       guard isActiveLaunchAttempt(attemptId) else { return }
       codexViewModel.refresh()
@@ -947,11 +1139,15 @@ public final class MultiSessionLaunchViewModel {
       codexViewModel.startNewSessionInHub(
         worktree,
         initialPrompt: initialPrompt,
-        initialInputText: initialInputText
+        initialInputText: initialInputText,
+        commandTemplateId: templateByProvider[.codex]?.id
       )
     }
 
     if providers.contains(.pi) {
+      if let templateId = templateByProvider[.pi]?.id {
+        templateService.setLastUsedTemplate(id: templateId, for: .pi)
+      }
       try? await Task.sleep(for: .milliseconds(500))
       guard isActiveLaunchAttempt(attemptId) else { return }
       piViewModel.refresh()
@@ -960,7 +1156,8 @@ public final class MultiSessionLaunchViewModel {
       piViewModel.startNewSessionInHub(
         worktree,
         initialPrompt: initialPrompt,
-        initialInputText: initialInputText
+        initialInputText: initialInputText,
+        commandTemplateId: templateByProvider[.pi]?.id
       )
     }
 
@@ -971,6 +1168,7 @@ public final class MultiSessionLaunchViewModel {
 
   private func launchMultipleProviders(
     providers: [SessionProviderKind],
+    templateByProvider: [SessionProviderKind: AgentCommandTemplateV1],
     initialPrompt: String?,
     initialInputText: String?,
     repoPath: String,
@@ -984,6 +1182,7 @@ public final class MultiSessionLaunchViewModel {
       let viewModel: CLISessionsViewModel
       let branchName: String
       let dangerouslySkipPermissions: Bool
+      let commandTemplateId: String?
       let setProgress: @MainActor (WorktreeCreationProgress) -> Void
     }
 
@@ -995,6 +1194,7 @@ public final class MultiSessionLaunchViewModel {
           viewModel: claudeViewModel,
           branchName: claudeBranchName,
           dangerouslySkipPermissions: claudeMode.dangerouslySkipPermissions,
+          commandTemplateId: templateByProvider[.claude]?.id,
           setProgress: { self.claudeProgress = $0 }
         )
       case .codex:
@@ -1003,6 +1203,7 @@ public final class MultiSessionLaunchViewModel {
           viewModel: codexViewModel,
           branchName: codexBranchName,
           dangerouslySkipPermissions: false,
+          commandTemplateId: templateByProvider[.codex]?.id,
           setProgress: { self.codexProgress = $0 }
         )
       case .pi:
@@ -1011,6 +1212,7 @@ public final class MultiSessionLaunchViewModel {
           viewModel: piViewModel,
           branchName: piBranchName,
           dangerouslySkipPermissions: false,
+          commandTemplateId: templateByProvider[.pi]?.id,
           setProgress: { self.piProgress = $0 }
         )
       }
@@ -1077,11 +1279,15 @@ public final class MultiSessionLaunchViewModel {
       guard let path = createdWorktrees[plan.kind] else { continue }
       let branchName = createdBranchNames[plan.kind] ?? plan.branchName
       let worktree = WorktreeBranch(name: branchName, path: path, isWorktree: true)
+      if let commandTemplateId = plan.commandTemplateId {
+        templateService.setLastUsedTemplate(id: commandTemplateId, for: plan.kind)
+      }
       plan.viewModel.startNewSessionInHub(
         worktree,
         initialPrompt: initialPrompt,
         initialInputText: initialInputText,
-        dangerouslySkipPermissions: plan.dangerouslySkipPermissions
+        dangerouslySkipPermissions: plan.dangerouslySkipPermissions,
+        commandTemplateId: plan.commandTemplateId
       )
       try? await Task.sleep(for: .milliseconds(400))
       guard isActiveLaunchAttempt(attemptId) else { return }
@@ -1093,6 +1299,8 @@ public final class MultiSessionLaunchViewModel {
   }
 
   private func launchSingleProvider(
+    provider: SessionProviderKind,
+    commandTemplateId: String?,
     initialPrompt: String?,
     initialInputText: String?,
     repoPath: String,
@@ -1156,9 +1364,40 @@ public final class MultiSessionLaunchViewModel {
       worktree,
       initialPrompt: initialPrompt,
       initialInputText: initialInputText,
-      dangerouslySkipPermissions: dangerouslySkipPermissions
+      dangerouslySkipPermissions: dangerouslySkipPermissions,
+      commandTemplateId: commandTemplateId
     )
+    if let commandTemplateId {
+      templateService.setLastUsedTemplate(id: commandTemplateId, for: provider)
+    }
     viewModel.refresh()
+  }
+
+  private func runBatchTemplates(
+    providers: [SessionProviderKind],
+    templateByProvider: [SessionProviderKind: AgentCommandTemplateV1],
+    repoPath: String,
+    prompt: String?
+  ) {
+    for provider in providers {
+      guard let template = templateByProvider[provider] else { continue }
+      let viewModel: CLISessionsViewModel = {
+        switch provider {
+        case .claude: return claudeViewModel
+        case .codex: return codexViewModel
+        case .pi: return piViewModel
+        }
+      }()
+      let context = BatchTaskExecutionContext(
+        provider: provider,
+        templateId: template.id,
+        projectPath: repoPath,
+        prompt: prompt,
+        cliConfiguration: viewModel.cliConfiguration
+      )
+      _ = batchRunnerService.run(template: template, context: context)
+      templateService.setLastUsedTemplate(id: template.id, for: provider)
+    }
   }
 
   private func normalizedBranchName(_ raw: String, fallback: String) -> String {

@@ -379,8 +379,33 @@ export const WsApprovalResolvedSchema = z.object({
   requestId: z.string().uuid(),
   decision: z.enum(["approved", "rejected"]),
   actor: z.string().min(1),
+  reason: z.string().optional(),
 });
 export type WsApprovalResolved = z.infer<typeof WsApprovalResolvedSchema>;
+
+export const WsApprovalHeartbeatSchema = z.object({
+  type: z.literal("approval.heartbeat"),
+  runId: z.string().uuid(),
+  requestId: z.string().uuid(),
+  remainingMs: z.number().int().nonnegative(),
+});
+export type WsApprovalHeartbeat = z.infer<typeof WsApprovalHeartbeatSchema>;
+
+export const WsApprovalPendingSchema = z.object({
+  type: z.literal("approval.pending"),
+  runId: z.string().uuid(),
+  requestId: z.string().uuid(),
+  expiresAt: z.string().datetime().optional(),
+});
+export type WsApprovalPending = z.infer<typeof WsApprovalPendingSchema>;
+
+export const WsTerminalClosedSchema = z.object({
+  type: z.literal("terminal.closed"),
+  terminalId: z.string().uuid(),
+  code: z.number().nullable(),
+  signal: z.string().nullable(),
+});
+export type WsTerminalClosed = z.infer<typeof WsTerminalClosedSchema>;
 
 export const WsWorkflowRunStateSchema = z.object({
   type: z.literal("workflow.run.state"),
@@ -395,8 +420,11 @@ export const WsEventSchema = z.discriminatedUnion("type", [
   WsWorkflowRunEventSchema,
   WsRuntimeUpdateStateSchema,
   WsTerminalOutputSchema,
+  WsTerminalClosedSchema,
   WsApprovalRequestedSchema,
   WsApprovalResolvedSchema,
+  WsApprovalHeartbeatSchema,
+  WsApprovalPendingSchema,
   WsWorkflowRunStateSchema,
 ]);
 export type WsEvent = z.infer<typeof WsEventSchema>;

@@ -18,7 +18,7 @@ public struct PendingChangesView: View {
   let pendingToolUse: PendingToolUse
   let claudeClient: (any ClaudeCode)?
   let onDismiss: () -> Void
-  let onApprovalResponse: ((String, CLISession) -> Void)?
+  let onApprovalResponse: ((Bool, CLISession) -> Void)?
 
   @State private var previewResult: PendingChangesPreviewService.PreviewResult?
   @State private var errorMessage: String?
@@ -52,7 +52,7 @@ public struct PendingChangesView: View {
     pendingToolUse: PendingToolUse,
     claudeClient: (any ClaudeCode)? = nil,
     onDismiss: @escaping () -> Void,
-    onApprovalResponse: ((String, CLISession) -> Void)? = nil
+    onApprovalResponse: ((Bool, CLISession) -> Void)? = nil
   ) {
     self.session = session
     self.pendingToolUse = pendingToolUse
@@ -314,12 +314,12 @@ public struct PendingChangesView: View {
   // MARK: - Actions
 
   private func acceptChanges() {
-    onApprovalResponse?("1", session)  // Menu option 1 = Yes
+    onApprovalResponse?(true, session)
     onDismiss()
   }
 
   private func rejectChanges() {
-    onApprovalResponse?("3", session)  // Menu option 3 = No
+    onApprovalResponse?(false, session)
     onDismiss()
   }
 

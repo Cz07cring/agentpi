@@ -163,10 +163,16 @@ export class PiRuntimeUpdater {
       });
 
       let done = false;
+      const forceKill = () => {
+        setTimeout(() => {
+          try { child.kill("SIGKILL"); } catch { /* already dead */ }
+        }, 3_000);
+      };
       const timeout = setTimeout(() => {
         if (!done) {
           done = true;
           child.kill("SIGTERM");
+          forceKill();
           resolve({ ok: false, details: "health check timeout" });
         }
       }, 15_000);

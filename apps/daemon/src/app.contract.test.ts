@@ -27,6 +27,17 @@ async function httpGet(port: number, path: string, token?: string): Promise<Resp
   });
 }
 
+async function httpPost(port: number, path: string, body: unknown, token?: string): Promise<Response> {
+  return await fetch(`http://127.0.0.1:${port}${path}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { "x-agentpi-token": token } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 describe("daemon API contract", () => {
   const running: DaemonApp[] = [];
 
@@ -88,5 +99,44 @@ describe("daemon API contract", () => {
     };
 
     expect(detailsJson.ws.rejectedConnections).toBeGreaterThanOrEqual(1);
+  });
+
+  it("rejects session creation with invalid cwd", async () => {
+    const started = await startDaemon();
+    running.push(started.daemon);
+
+    const res = await httpPost(started.port, "/v1/sessions", { cwd: "/path/not/exist" }, started.token);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.code).toBe("invalid_cwd");
+  });
+
+  it("rejects worktree removal with invalid id", async () => {
+    const started = await startDaemon();
+    running.push(started.daemon);
+
+    const res = await fetch(`http://127.0.0.1:${started.port}/v1/worktrees/not-base64`, {
+      method: "DELETE",
+      headers: { "x-agentpi-token": started.token },
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.code).toBe("invalid_worktree_id");
+  });
+
+  it("rejects worktree removal when path is not a git worktree", async () => {
+    const started = await startDaemon();
+    running.push(started.daemon);
+
+    const fakePath = Buffer.from("/tmp", "utf8").toString("base64url");
+    const res = await fetch(`http://127.0.0.1:${started.port}/v1/worktrees/${fakePath}`, {
+      method: "DELETE",
+      headers: { "x-agentpi-token": started.token },
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.code).toBe("not_a_git_worktree");
   });
 });

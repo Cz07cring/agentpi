@@ -66,6 +66,12 @@ private enum LayoutMode: Int, CaseIterable {
   }
 }
 
+private enum MonitorDetailMode: String, CaseIterable {
+  case hub = "hub"
+  case batchRuns = "batch_runs"
+  case mobileRelay = "mobile_relay"
+}
+
 // MARK: - HubFilterMode
 
 public enum HubFilterMode: Int, CaseIterable {
@@ -194,7 +200,7 @@ enum ProviderMonitoringItem: Identifiable {
     switch self {
     case .pending(_, _, let pending):
       return pending.startedAt
-    case .monitored(_, _, let session, let state):
+    case .monitored(_, _, let session, _):
       return session.lastActivityAt
     }
   }
@@ -225,6 +231,8 @@ public struct MultiProviderMonitoringPanelView: View {
   @State private var sessionFileSheetItem: SessionFileSheetItem?
   @State private var maximizedSessionId: String?
   @State private var sidePanelContent: SidePanelContent?
+  @AppStorage(AgentPiDefaults.monitorDetailMode)
+  private var detailModeRawValue: String = MonitorDetailMode.hub.rawValue
   @Binding var filterMode: HubFilterMode
   @State private var availableDetailWidth: CGFloat = 0
   @Binding var primarySessionId: String?
@@ -235,6 +243,11 @@ public struct MultiProviderMonitoringPanelView: View {
 
   private var layoutMode: LayoutMode {
     get { LayoutMode(rawValue: layoutModeRawValue) ?? .single }
+  }
+
+  private var detailMode: MonitorDetailMode {
+    get { MonitorDetailMode(rawValue: detailModeRawValue) ?? .hub }
+    nonmutating set { detailModeRawValue = newValue.rawValue }
   }
 
   private var canShowSidePanel: Bool {
@@ -267,15 +280,22 @@ public struct MultiProviderMonitoringPanelView: View {
         header
 
         Divider()
-
-        if isLoading {
-          loadingState
-        } else if allItems.isEmpty {
-          emptyState
-        } else if visibleItems.isEmpty {
-          filteredEmptyState
+        if detailMode == .batchRuns {
+          BatchRunsPanelView()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if detailMode == .mobileRelay {
+          MobileRelayPanelView()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-          monitoredSessionsList
+          if isLoading {
+            loadingState
+          } else if allItems.isEmpty {
+            emptyState
+          } else if visibleItems.isEmpty {
+            filteredEmptyState
+          } else {
+            monitoredSessionsList
+          }
         }
       }
     }
@@ -340,29 +360,78 @@ public struct MultiProviderMonitoringPanelView: View {
 
   // MARK: - Header
 
+  private var detailModeTitle: String {
+    switch detailMode {
+    case .hub:
+      return L10n.t("hub.title", "Hub")
+    case .batchRuns:
+      return L10n.t("batch_runs.title", "Batch Runs")
+    case .mobileRelay:
+      return L10n.t("mobile_relay.title", "Mobile Relay")
+    }
+  }
+
   private var header: some View {
     HStack(spacing: 12) {
-      Text(L10n.t("hub.title", "Hub"))
+      Text(detailModeTitle)
         .font(.system(size: 13, weight: .bold, design: .monospaced))
+
+      HStack(spacing: 6) {
+        Button(L10n.t("hub.title", "Hub")) {
+          detailMode = .hub
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+          Capsule()
+            .fill(detailMode == .hub ? Color.primary.opacity(0.18) : Color.clear)
+        )
+
+        Button(L10n.t("batch_runs.title", "Batch Runs")) {
+          detailMode = .batchRuns
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+          Capsule()
+            .fill(detailMode == .batchRuns ? Color.primary.opacity(0.18) : Color.clear)
+        )
+
+        Button(L10n.t("mobile_relay.title", "Mobile Relay")) {
+          detailMode = .mobileRelay
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+          Capsule()
+            .fill(detailMode == .mobileRelay ? Color.primary.opacity(0.18) : Color.clear)
+        )
+      }
+      .font(.system(size: 11, weight: .medium))
 
       Spacer()
 
       // Layout mode toggle (single / list / grid)
-      HStack(spacing: 6) {
-        ForEach(LayoutMode.allCases, id: \.self) { mode in
-          Button(action: { layoutModeRawValue = mode.rawValue }) {
-            Image(systemName: mode.icon)
-              .font(.caption)
-              .foregroundColor(layoutMode == mode ? .primary : .secondary)
-              .frame(width: 26, height: 20)
-              .contentShape(Rectangle())
+      if detailMode == .hub {
+        HStack(spacing: 6) {
+          ForEach(LayoutMode.allCases, id: \.self) { mode in
+            Button(action: { layoutModeRawValue = mode.rawValue }) {
+              Image(systemName: mode.icon)
+                .font(.caption)
+                .foregroundColor(layoutMode == mode ? .primary : .secondary)
+                .frame(width: 26, height: 20)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
           }
-          .buttonStyle(.plain)
         }
+        .padding(4)
+        .background(Color.secondary.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
       }
-      .padding(4)
-      .background(Color.secondary.opacity(0.12))
-      .clipShape(RoundedRectangle(cornerRadius: 6))
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 10)
@@ -479,6 +548,7 @@ public struct MultiProviderMonitoringPanelView: View {
           showTerminal: true,
           initialPrompt: pending.initialPrompt,
           initialInputText: pending.initialInputText,
+          commandTemplateId: pending.commandTemplateId,
           terminalKey: pendingId,
           viewModel: viewModel,
           dangerouslySkipPermissions: pending.dangerouslySkipPermissions,
@@ -488,6 +558,20 @@ public struct MultiProviderMonitoringPanelView: View {
           onCopySessionId: { },
           onOpenSessionFile: { },
           onRefreshTerminal: { },
+          onRequestMobileRelayQuick: { session, sourceProvider in
+            _ = launchMobileRelay(
+              session: session,
+              sourceProvider: sourceProvider,
+              request: MobileRelayLaunchRequest(targetProvider: sourceProvider)
+            )
+          },
+          onRequestMobileRelayAdvanced: { session, request in
+            _ = launchMobileRelay(
+              session: session,
+              sourceProvider: item.providerKind,
+              request: request
+            )
+          },
           onTerminalInteraction: { setPrimarySessionIfNeeded(item.id) },
           isMaximized: false,
           onToggleMaximize: { },
@@ -534,6 +618,20 @@ public struct MultiProviderMonitoringPanelView: View {
                 forKey: session.id,
                 sessionId: session.id,
                 projectPath: session.projectPath
+              )
+            },
+            onRequestMobileRelayQuick: { session, sourceProvider in
+              _ = launchMobileRelay(
+                session: session,
+                sourceProvider: sourceProvider,
+                request: MobileRelayLaunchRequest(targetProvider: sourceProvider)
+              )
+            },
+            onRequestMobileRelayAdvanced: { session, request in
+              _ = launchMobileRelay(
+                session: session,
+                sourceProvider: item.providerKind,
+                request: request
               )
             },
             onInlineRequestSubmit: { prompt, sess in
@@ -622,6 +720,7 @@ public struct MultiProviderMonitoringPanelView: View {
               showTerminal: true,
               initialPrompt: pending.initialPrompt,
               initialInputText: pending.initialInputText,
+              commandTemplateId: pending.commandTemplateId,
               terminalKey: "pending-\(pending.id.uuidString)",
               viewModel: viewModel,
               dangerouslySkipPermissions: pending.dangerouslySkipPermissions,
@@ -631,6 +730,20 @@ public struct MultiProviderMonitoringPanelView: View {
               onCopySessionId: { },
               onOpenSessionFile: { },
               onRefreshTerminal: { },
+              onRequestMobileRelayQuick: { session, sourceProvider in
+                _ = launchMobileRelay(
+                  session: session,
+                  sourceProvider: sourceProvider,
+                  request: MobileRelayLaunchRequest(targetProvider: sourceProvider)
+                )
+              },
+              onRequestMobileRelayAdvanced: { session, request in
+                _ = launchMobileRelay(
+                  session: session,
+                  sourceProvider: item.providerKind,
+                  request: request
+                )
+              },
               onTerminalInteraction: { setPrimarySessionIfNeeded(item.id) },
               isMaximized: maximizedSessionId == item.id,
               onToggleMaximize: {
@@ -678,6 +791,20 @@ public struct MultiProviderMonitoringPanelView: View {
                   forKey: session.id,
                   sessionId: session.id,
                   projectPath: session.projectPath
+                )
+              },
+              onRequestMobileRelayQuick: { session, sourceProvider in
+                _ = launchMobileRelay(
+                  session: session,
+                  sourceProvider: sourceProvider,
+                  request: MobileRelayLaunchRequest(targetProvider: sourceProvider)
+                )
+              },
+              onRequestMobileRelayAdvanced: { session, request in
+                _ = launchMobileRelay(
+                  session: session,
+                  sourceProvider: item.providerKind,
+                  request: request
                 )
               },
               onInlineRequestSubmit: { prompt, sess in
@@ -767,6 +894,7 @@ public struct MultiProviderMonitoringPanelView: View {
           showTerminal: true,
           initialPrompt: pending.initialPrompt,
           initialInputText: pending.initialInputText,
+          commandTemplateId: pending.commandTemplateId,
           terminalKey: "pending-\(pending.id.uuidString)",
           viewModel: viewModel,
           dangerouslySkipPermissions: pending.dangerouslySkipPermissions,
@@ -829,6 +957,20 @@ public struct MultiProviderMonitoringPanelView: View {
               forKey: session.id,
               sessionId: session.id,
               projectPath: session.projectPath
+            )
+          },
+          onRequestMobileRelayQuick: { session, sourceProvider in
+            _ = launchMobileRelay(
+              session: session,
+              sourceProvider: sourceProvider,
+              request: MobileRelayLaunchRequest(targetProvider: sourceProvider)
+            )
+          },
+          onRequestMobileRelayAdvanced: { session, request in
+            _ = launchMobileRelay(
+              session: session,
+              sourceProvider: item.providerKind,
+              request: request
             )
           },
           onInlineRequestSubmit: { prompt, sess in
@@ -936,6 +1078,37 @@ public struct MultiProviderMonitoringPanelView: View {
         isPending: false,
         recentActivityDescriptions: state?.recentActivities.map(\.description) ?? []
       )
+    }
+  }
+
+  @discardableResult
+  private func launchMobileRelay(
+    session: CLISession,
+    sourceProvider: SessionProviderKind,
+    request: MobileRelayLaunchRequest
+  ) -> String {
+    let configuration = cliConfiguration(for: request.targetProvider)
+    let taskId = MobileRelayService.shared.launch(
+      session: session,
+      sourceProvider: sourceProvider,
+      request: request,
+      cliConfiguration: configuration
+    )
+    let autoSwitch = UserDefaults.standard.object(forKey: AgentPiDefaults.mobileRelayAutoSwitchPanel) as? Bool ?? true
+    if autoSwitch {
+      detailMode = .mobileRelay
+    }
+    return taskId
+  }
+
+  private func cliConfiguration(for provider: SessionProviderKind) -> CLICommandConfiguration {
+    switch provider {
+    case .claude:
+      return claudeViewModel.cliConfiguration
+    case .codex:
+      return codexViewModel.cliConfiguration
+    case .pi:
+      return piViewModel.cliConfiguration
     }
   }
 

@@ -175,6 +175,6 @@ public struct CLIDetectionService {
   private static func executableName(from command: String) -> String {
     let raw = command.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !raw.isEmpty else { return command }
-    return String(raw.split(separator: " ", maxSplits: 1).first ?? Substring(raw))
+    return CLICommandConfiguration.tokenizeCommand(raw).first ?? raw
   }
 }

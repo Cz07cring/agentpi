@@ -14,6 +14,7 @@ struct CollapsibleSessionRow: View {
   let onArchive: (() -> Void)?
   let onDeleteWorktree: (() -> Void)?
   var isDeletingWorktree: Bool = false
+  var onMobileRelay: (() -> Void)? = nil
   let onSelect: () -> Void
 
   @State private var gradientProgress: CGFloat = 0
@@ -221,8 +222,26 @@ struct CollapsibleSessionRow: View {
       }
     )
     .overlay(alignment: .bottomTrailing) {
-      if !isPending, (onArchive != nil || onDeleteWorktree != nil) {
+      if onMobileRelay != nil || onArchive != nil || onDeleteWorktree != nil || isPending {
         HStack(spacing: 4) {
+          if onMobileRelay != nil || isPending {
+            Button {
+              onMobileRelay?()
+            } label: {
+              Image(systemName: "iphone.gen3")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .frame(width: 20, height: 20)
+            }
+            .buttonStyle(.plain)
+            .disabled(onMobileRelay == nil)
+            .help(
+              onMobileRelay == nil
+                ? L10n.t("monitoring.help.mobile_relay_pending", "Mobile handoff is available after the session is ready.")
+                : L10n.t("monitoring.help.mobile_relay", "One-click handoff to mobile relay")
+            )
+          }
+
           if let onArchive {
             Group {
               if showArchiveConfirm {

@@ -356,6 +356,46 @@ public struct TerminalLauncher {
     return launchTerminalScript(command: command, scriptPrefix: "cli_resume")
   }
 
+  /// Launches an arbitrary CLI command in Terminal using a dedicated script.
+  /// Useful for mobile relay tools (e.g. `happy codex`) that should stay separate
+  /// from embedded local session commands.
+  public static func launchTerminalCommand(
+    _ rawCommand: String,
+    workingDirectory: String = NSHomeDirectory()
+  ) -> Error? {
+    let tokens = CLICommandConfiguration.tokenizeCommand(rawCommand)
+    guard let executableToken = tokens.first, !executableToken.isEmpty else {
+      return NSError(
+        domain: "TerminalLauncher",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Command is empty."]
+      )
+    }
+
+    guard let executablePath = findExecutable(command: executableToken, additionalPaths: nil) else {
+      return NSError(
+        domain: "TerminalLauncher",
+        code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "Could not find '\(executableToken)' command."]
+      )
+    }
+
+    let escapedPath = workingDirectory.replacingOccurrences(of: "\\", with: "\\\\")
+      .replacingOccurrences(of: "\"", with: "\\\"")
+    let escapedExecutablePath = executablePath.replacingOccurrences(of: "\\", with: "\\\\")
+      .replacingOccurrences(of: "\"", with: "\\\"")
+    let escapedArgs = tokens.dropFirst().map {
+      $0.replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "'", with: "'\\''")
+    }
+    let joinedArgs = escapedArgs.map { "'\($0)'" }.joined(separator: " ")
+    let command = joinedArgs.isEmpty
+      ? "cd \"\(escapedPath)\" && \"\(escapedExecutablePath)\""
+      : "cd \"\(escapedPath)\" && \"\(escapedExecutablePath)\" \(joinedArgs)"
+
+    return launchTerminalScript(command: command, scriptPrefix: "cli_command")
+  }
+
   /// Creates and executes a terminal script
   private static func launchTerminalScript(command: String, scriptPrefix: String) -> Error? {
     let tempDir = NSTemporaryDirectory()
@@ -453,6 +493,15 @@ public struct TerminalLauncher {
   ) -> String? {
     let fileManager = FileManager.default
     let homeDir = NSHomeDirectory()
+    let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    if trimmedCommand.contains("/") {
+      let expanded = (trimmedCommand as NSString).expandingTildeInPath
+      if fileManager.isExecutableFile(atPath: expanded) {
+        return expanded
+      }
+      return nil
+    }
 
     // Default search paths
     let defaultPaths = [
@@ -477,8 +526,8 @@ public struct TerminalLauncher {
 
     // Search for the command in all paths
     for path in allPaths {
-      let fullPath = "\(path)/\(command)"
-      if fileManager.fileExists(atPath: fullPath) {
+      let fullPath = "\(path)/\(trimmedCommand)"
+      if fileManager.isExecutableFile(atPath: fullPath) {
         return fullPath
       }
     }
@@ -491,7 +540,7 @@ public struct TerminalLauncher {
 
     let task = Process()
     task.launchPath = "/usr/bin/which"
-    task.arguments = [command]
+    task.arguments = [trimmedCommand]
 
     let pipe = Pipe()
     task.standardOutput = pipe

@@ -10,7 +10,7 @@ import Foundation
 
 // MARK: - SessionProviderKind
 
-public enum SessionProviderKind: String, CaseIterable, Sendable {
+public enum SessionProviderKind: String, CaseIterable, Codable, Sendable {
   case claude = "Claude"
   case codex = "Codex"
   case pi = "AgentPi"

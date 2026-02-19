@@ -100,7 +100,11 @@ export class WorkflowEngine {
     if (!persisted) {
       throw new Error(`Workflow run ${runId} not found`);
     }
-    return JSON.parse(persisted.stateJson) as WorkflowRunState;
+    try {
+      return JSON.parse(persisted.stateJson) as WorkflowRunState;
+    } catch {
+      throw new Error(`Workflow run ${runId} has corrupted state data`);
+    }
   }
 
   async runWorkflow(workflowId: string, input: WorkflowRunInput): Promise<WorkflowRunState> {
@@ -109,7 +113,12 @@ export class WorkflowEngine {
       throw new Error(`Workflow ${workflowId} not found`);
     }
 
-    const graph = JSON.parse(stored.graphJson) as WorkflowGraphV1;
+    let graph: WorkflowGraphV1;
+    try {
+      graph = JSON.parse(stored.graphJson) as WorkflowGraphV1;
+    } catch {
+      throw new Error(`Workflow ${workflowId} has corrupted graph data`);
+    }
     const compiled = this.compiler.compile(graph);
 
     const sessionId = input.sessionId ?? (await this.createWorkflowSession());
@@ -146,7 +155,9 @@ export class WorkflowEngine {
         endedAt: new Date().toISOString(),
       });
       this.emitRunEvent(runId, { phase: "completed" });
-      return this.getRunState(runId);
+      const finalState = this.getRunState(runId);
+      this.runs.delete(runId);
+      return finalState;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.updateRunState(state, {
@@ -156,32 +167,35 @@ export class WorkflowEngine {
         endedAt: new Date().toISOString(),
       });
       this.emitRunEvent(runId, { phase: "failed", error: message });
-      return this.getRunState(runId);
+      const finalState = this.getRunState(runId);
+      this.runs.delete(runId);
+      return finalState;
     }
   }
 
-  resolveApproval(decision: ApprovalDecision): void {
+  resolveApproval(decision: ApprovalDecision): { alreadyResolved: boolean; currentStatus: string } | void {
     const request = this.approvals.get(decision.requestId);
     if (!request) {
       throw new Error(`Approval request ${decision.requestId} not found`);
     }
     if (request.status !== "pending") {
-      throw new Error(`Approval request ${decision.requestId} already resolved`);
+      return { alreadyResolved: true, currentStatus: request.status };
     }
 
     request.status = decision.decision === "approved" ? "approved" : "rejected";
-    this.approvals.set(request.id, request);
 
     const waiter = this.approvalWaiters.get(request.id);
     if (waiter) {
       clearTimeout(waiter.timeout);
       this.approvalWaiters.delete(request.id);
+      const reason = decision.comment;
       this.bus.emitWs({
         type: "approval.resolved",
         runId: waiter.runId,
         requestId: request.id,
         decision: decision.decision,
         actor: decision.actor,
+        reason,
       });
       if (request.status === "approved") {
         waiter.resolve(request);
@@ -189,6 +203,8 @@ export class WorkflowEngine {
         waiter.reject(new Error(decision.comment ?? "Approval rejected"));
       }
     }
+
+    this.approvals.delete(request.id);
   }
 
   private async executeFromNode(
@@ -373,10 +389,16 @@ export class WorkflowEngine {
       runId: state.id,
       request,
     });
+    this.bus.emitWs({
+      type: "approval.pending",
+      runId: state.id,
+      requestId: request.id,
+      expiresAt: request.expiresAt,
+    });
 
     if (!request.blocking) {
       request.status = "approved";
-      this.approvals.set(request.id, request);
+      this.approvals.delete(request.id);
       this.appendNodeResult(state, {
         nodeId: node.id,
         status: "completed",
@@ -392,7 +414,23 @@ export class WorkflowEngine {
       pendingApprovalId: request.id,
     });
 
-    await this.waitForApproval(state.id, request, node.config.timeoutMs ?? 300_000);
+    try {
+      await this.waitForApproval(state.id, request, node.config.timeoutMs ?? 300_000);
+    } catch (error) {
+      this.updateRunState(state, {
+        pendingApprovalId: undefined,
+        status: "failed",
+        phase: "approval_timeout",
+      });
+      this.appendNodeResult(state, {
+        nodeId: node.id,
+        status: "failed",
+        error: "Approval timed out",
+        completedAt: new Date().toISOString(),
+      });
+      throw error;
+    }
+
     this.updateRunState(state, {
       status: "running",
       pendingApprovalId: undefined,
@@ -503,25 +541,67 @@ export class WorkflowEngine {
 
   private async waitForApproval(runId: string, request: ApprovalRequest, timeoutMs: number): Promise<ApprovalRequest> {
     return await new Promise<ApprovalRequest>((resolve, reject) => {
+      const emitHeartbeat = () => {
+        const remaining = Math.max(0, timeoutMs - (Date.now() - new Date(request.createdAt).getTime()));
+        this.bus.emitWs({
+          type: "approval.heartbeat",
+          runId,
+          requestId: request.id,
+          remainingMs: remaining,
+        });
+      };
+
+      emitHeartbeat();
+      const heartbeatInterval = setInterval(() => {
+        emitHeartbeat();
+      }, 5_000);
+
       const timeout = setTimeout(() => {
+        clearInterval(heartbeatInterval);
         this.approvalWaiters.delete(request.id);
         request.status = "rejected";
-        this.approvals.set(request.id, request);
+        this.approvals.delete(request.id);
+        this.bus.emitWs({
+          type: "approval.heartbeat",
+          runId,
+          requestId: request.id,
+          remainingMs: 0,
+        });
+        this.bus.emitWs({
+          type: "approval.resolved",
+          runId,
+          requestId: request.id,
+          decision: "rejected",
+          actor: "system",
+          reason: "timeout",
+        });
         reject(new Error(`Approval ${request.id} timed out`));
       }, timeoutMs);
+
+      const originalResolve = (req: ApprovalRequest) => {
+        clearInterval(heartbeatInterval);
+        resolve(req);
+      };
+      const originalReject = (error: Error) => {
+        clearInterval(heartbeatInterval);
+        reject(error);
+      };
 
       this.approvalWaiters.set(request.id, {
         runId,
         timeout,
-        resolve,
-        reject,
+        resolve: originalResolve,
+        reject: originalReject,
       });
     });
   }
 
   private appendNodeResult(state: WorkflowRunState, result: WorkflowNodeResult): void {
-    const nodeResults = [...(state.nodeResults ?? []), result];
-    this.updateRunState(state, { nodeResults });
+    if (!state.nodeResults) {
+      state.nodeResults = [];
+    }
+    state.nodeResults.push(result);
+    this.updateRunState(state, { nodeResults: [...state.nodeResults] });
   }
 
   private updateRunState(state: WorkflowRunState, patch: Partial<WorkflowRunState>): void {
@@ -549,6 +629,15 @@ export class WorkflowEngine {
       runId: state.id,
       state,
     });
+
+    if (state.pendingApprovalId) {
+      this.bus.emitWs({
+        type: "approval.pending",
+        runId: state.id,
+        requestId: state.pendingApprovalId,
+        expiresAt: state.pendingApprovalId ? this.approvals.get(state.pendingApprovalId)?.expiresAt : undefined,
+      });
+    }
   }
 
   private emitRunEvent(runId: string, event: Record<string, unknown>): void {

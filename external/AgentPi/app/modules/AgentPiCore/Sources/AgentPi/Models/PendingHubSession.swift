@@ -16,12 +16,14 @@ public struct PendingHubSession: Identifiable {
   public let initialPrompt: String?
   public let initialInputText: String?
   public let dangerouslySkipPermissions: Bool
+  public let commandTemplateId: String?
 
   public init(
     worktree: WorktreeBranch,
     initialPrompt: String? = nil,
     initialInputText: String? = nil,
-    dangerouslySkipPermissions: Bool = false
+    dangerouslySkipPermissions: Bool = false,
+    commandTemplateId: String? = nil
   ) {
     self.id = UUID()
     self.worktree = worktree
@@ -29,6 +31,7 @@ public struct PendingHubSession: Identifiable {
     self.initialPrompt = initialPrompt
     self.initialInputText = initialInputText
     self.dangerouslySkipPermissions = dangerouslySkipPermissions
+    self.commandTemplateId = commandTemplateId
   }
 
   /// Creates a placeholder CLISession for use with MonitoringCardView

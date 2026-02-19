@@ -14,9 +14,11 @@ export class TerminalService {
 
   start(cwd: string, shell = process.env.SHELL ?? "bash"): string {
     const id = randomUUID();
+    const filteredEnv = { ...process.env };
+    delete filteredEnv.AGENTPI_DAEMON_TOKEN;
     const child = spawn(shell, [], {
       cwd,
-      env: process.env,
+      env: filteredEnv,
       stdio: "pipe",
     });
 
@@ -31,8 +33,9 @@ export class TerminalService {
       this.bus.emitWs({ type: "terminal.output", terminalId: id, chunk });
     });
 
-    child.on("close", () => {
+    child.on("close", (code, signal) => {
       this.terminals.delete(id);
+      this.bus.emitWs({ type: "terminal.closed", terminalId: id, code, signal });
     });
 
     this.terminals.set(id, { id, process: child });

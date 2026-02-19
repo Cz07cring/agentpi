@@ -247,6 +247,7 @@ public final class CLISessionsViewModel {
     sessionFilePath: String? = nil,
     projectPath: String,
     cliConfiguration: CLICommandConfiguration? = nil,
+    commandTemplateId: String? = nil,
     initialPrompt: String?,
     initialInputText: String? = nil,
     isDark: Bool = true,
@@ -285,6 +286,7 @@ public final class CLISessionsViewModel {
       sessionFilePath: sessionFilePath,
       projectPath: projectPath,
       cliConfiguration: config,
+      commandTemplateId: commandTemplateId,
       initialPrompt: startupPrompt,
       initialInputText: initialInputText,
       isDark: isDark,
@@ -314,7 +316,12 @@ public final class CLISessionsViewModel {
   /// This reloads the session history from the JSONL file (useful when session was updated externally).
   public func refreshTerminal(forKey key: String, sessionId: String?, projectPath: String) {
     guard let terminal = activeTerminals[key] else { return }
-    terminal.restart(sessionId: sessionId, projectPath: projectPath, cliConfiguration: currentCLIConfiguration)
+    terminal.restart(
+      sessionId: sessionId,
+      projectPath: projectPath,
+      cliConfiguration: currentCLIConfiguration,
+      commandTemplateId: nil
+    )
   }
 
   /// Types text into the terminal for a given key without pressing Enter.
@@ -1166,7 +1173,8 @@ public final class CLISessionsViewModel {
     _ worktree: WorktreeBranch,
     initialPrompt: String? = nil,
     initialInputText: String? = nil,
-    dangerouslySkipPermissions: Bool = false
+    dangerouslySkipPermissions: Bool = false,
+    commandTemplateId: String? = nil
   ) {
     // Each pending session gets a unique ID, so no need to clear existing terminals
     // Terminals are now keyed by session ID, not worktree path
@@ -1174,7 +1182,8 @@ public final class CLISessionsViewModel {
       worktree: worktree,
       initialPrompt: initialPrompt,
       initialInputText: initialInputText,
-      dangerouslySkipPermissions: dangerouslySkipPermissions
+      dangerouslySkipPermissions: dangerouslySkipPermissions,
+      commandTemplateId: commandTemplateId
     )
     pendingHubSessions.append(pending)
     lastCreatedPendingId = pending.id
@@ -1405,12 +1414,13 @@ public final class CLISessionsViewModel {
           .flatMap { $0.worktrees }
           .first { $0.path == worktree.path }?
           .sessions ?? []
+        let hasSessionId = currentSessions.contains { $0.id == sessionId }
 
         let claudeDataPath = FileManager.default.homeDirectoryForCurrentUser.path + "/.claude"
         let encodedPath = worktree.path.claudeProjectPathEncoded
         let fallbackSessionFilePath = "\(claudeDataPath)/projects/\(encodedPath)/\(sessionId).jsonl"
         if providerKind == .claude,
-           currentSessions.isEmpty,
+           !hasSessionId,
            FileManager.default.fileExists(atPath: fallbackSessionFilePath) {
           // Session file exists but not in history.jsonl yet - create directly
           let newSession = CLISession(
@@ -1447,7 +1457,7 @@ public final class CLISessionsViewModel {
         }
 
         if (providerKind == .codex || providerKind == .pi),
-           currentSessions.isEmpty,
+           !hasSessionId,
            let sessionFilePath {
           let newSession = CLISession(
             id: sessionId,

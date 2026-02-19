@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import type { DaemonEventBus } from "../../lib/event-bus.js";
 
 export interface DevServerProcess {
   id: string;
@@ -12,9 +13,13 @@ export interface DevServerProcess {
 export class DevServerService {
   private readonly servers = new Map<string, DevServerProcess>();
 
+  constructor(private readonly bus?: DaemonEventBus) {}
+
   start(command: string, args: string[], cwd: string): string {
     const id = randomUUID();
-    const child = spawn(command, args, { cwd, stdio: "pipe", env: process.env });
+    const env = { ...process.env } as NodeJS.ProcessEnv;
+    delete env.AGENTPI_DAEMON_TOKEN;
+    const child = spawn(command, args, { cwd, stdio: "pipe", env });
 
     this.servers.set(id, {
       id,
@@ -24,8 +29,13 @@ export class DevServerService {
       process: child,
     });
 
-    child.on("close", () => {
+    child.on("close", (code, signal) => {
       this.servers.delete(id);
+      this.bus?.emitWs({
+        type: "session.event",
+        sessionId: id,
+        event: { type: "devserver.closed", devServerId: id, code, signal },
+      });
     });
 
     return id;

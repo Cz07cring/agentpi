@@ -32,7 +32,9 @@ public actor SessionFileWatcher {
   private nonisolated let processingQueue = DispatchQueue(label: "com.ring.agentpi.sessionwatcher.processing")
 
   /// Seconds to wait before considering a tool as awaiting approval
-  private var approvalTimeoutSeconds: Int = 0
+  private var approvalTimeoutSeconds: Int = 5
+  /// Snapshot used by nonisolated processing queue
+  private nonisolated(unsafe) var approvalTimeoutSecondsSnapshot: Int = 5
 
   /// Publisher for state updates
   public nonisolated var statePublisher: AnyPublisher<StateUpdate, Never> {
@@ -47,7 +49,11 @@ public actor SessionFileWatcher {
 
   /// Set the approval timeout in seconds
   public func setApprovalTimeout(_ seconds: Int) async {
-    self.approvalTimeoutSeconds = max(1, seconds)  // Minimum 1 second
+    let value = max(1, seconds)  // Minimum 1 second
+    self.approvalTimeoutSeconds = value
+    processingQueue.async { [value] in
+      self.approvalTimeoutSecondsSnapshot = value
+    }
   }
 
   /// Get the current approval timeout in seconds
@@ -99,9 +105,6 @@ public actor SessionFileWatcher {
     // Track file position for incremental reading
     var filePosition = getFileSize(filePath)
 
-    // Capture timeout for use in closures
-    let timeout = approvalTimeoutSeconds
-
     // Shared state between closures - protected by processingQueue
     var lastFileEventTime = Date()
     var lastKnownFileSize = filePosition
@@ -122,6 +125,7 @@ public actor SessionFileWatcher {
 
         guard !newLines.isEmpty else { return }
 
+        let timeout = self.approvalTimeoutSecondsSnapshot
         // Parse new lines
         SessionJSONLParser.parseNewLines(newLines, into: &parseResult, approvalTimeoutSeconds: timeout)
 
@@ -167,6 +171,7 @@ public actor SessionFileWatcher {
           let newLines = self.readNewLines(from: filePath, startingAt: &tempPosition)
 
           if !newLines.isEmpty {
+            let timeout = self.approvalTimeoutSecondsSnapshot
             SessionJSONLParser.parseNewLines(newLines, into: &parseResult, approvalTimeoutSeconds: timeout)
 
             // Update tracking
@@ -180,6 +185,7 @@ public actor SessionFileWatcher {
 
         // Re-evaluate status based on current time
         let previousStatus = lastEmittedStatus
+        let timeout = self.approvalTimeoutSecondsSnapshot
         SessionJSONLParser.updateCurrentStatus(&parseResult, approvalTimeoutSeconds: timeout)
 
         // Only emit if status actually changed
@@ -330,7 +336,7 @@ public actor SessionFileWatcher {
   private nonisolated func buildMonitorState(from result: SessionJSONLParser.ParseResult) -> SessionMonitorState {
     // Convert pending tool uses
     let pendingToolUse: PendingToolUse?
-    if let (_, pending) = result.pendingToolUses.first {
+    if let pending = latestPendingToolUse(from: result) {
       pendingToolUse = PendingToolUse(
         toolName: pending.toolName,
         toolUseId: pending.toolUseId,
@@ -344,7 +350,7 @@ public actor SessionFileWatcher {
 
     return SessionMonitorState(
       status: result.currentStatus,
-      currentTool: extractCurrentTool(from: result),
+      currentTool: pendingToolUse?.toolName,
       lastActivityAt: result.lastActivityAt ?? Date(),
       inputTokens: result.lastInputTokens,          // Last input (context window)
       outputTokens: result.lastOutputTokens,         // Last output
@@ -361,11 +367,10 @@ public actor SessionFileWatcher {
     )
   }
 
-  private nonisolated func extractCurrentTool(from result: SessionJSONLParser.ParseResult) -> String? {
-    if let (_, pending) = result.pendingToolUses.first {
-      return pending.toolName
-    }
-    return nil
+  private nonisolated func latestPendingToolUse(
+    from result: SessionJSONLParser.ParseResult
+  ) -> SessionJSONLParser.PendingToolInfo? {
+    result.pendingToolUses.values.max { $0.timestamp < $1.timestamp }
   }
 
   /// Check if a status is awaitingApproval

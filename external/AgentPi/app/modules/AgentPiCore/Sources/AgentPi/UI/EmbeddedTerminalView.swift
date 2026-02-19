@@ -49,6 +49,7 @@ public struct EmbeddedTerminalView: NSViewRepresentable {
   let sessionFilePath: String?  // Optional: explicit session file path (preferred for pi resume)
   let projectPath: String
   let cliConfiguration: CLICommandConfiguration
+  let commandTemplateId: String?  // Optional command template override for this launch
   let initialPrompt: String?  // Optional: prompt to include with resume command
   let initialInputText: String?  // Optional: text to prefill terminal input without Enter
   let viewModel: CLISessionsViewModel?  // For shared terminal storage
@@ -61,6 +62,7 @@ public struct EmbeddedTerminalView: NSViewRepresentable {
     sessionFilePath: String? = nil,
     projectPath: String,
     cliConfiguration: CLICommandConfiguration,
+    commandTemplateId: String? = nil,
     initialPrompt: String? = nil,
     initialInputText: String? = nil,
     viewModel: CLISessionsViewModel? = nil,
@@ -72,6 +74,7 @@ public struct EmbeddedTerminalView: NSViewRepresentable {
     self.sessionFilePath = sessionFilePath
     self.projectPath = projectPath
     self.cliConfiguration = cliConfiguration
+    self.commandTemplateId = commandTemplateId
     self.initialPrompt = initialPrompt
     self.initialInputText = initialInputText
     self.viewModel = viewModel
@@ -90,6 +93,7 @@ public struct EmbeddedTerminalView: NSViewRepresentable {
         sessionFilePath: sessionFilePath,
         projectPath: projectPath,
         cliConfiguration: cliConfiguration,
+        commandTemplateId: commandTemplateId,
         initialPrompt: initialPrompt,
         initialInputText: initialInputText,
         isDark: isDark,
@@ -106,6 +110,7 @@ public struct EmbeddedTerminalView: NSViewRepresentable {
       sessionFilePath: sessionFilePath,
       projectPath: projectPath,
       cliConfiguration: cliConfiguration,
+      commandTemplateId: commandTemplateId,
       initialPrompt: initialPrompt,
       initialInputText: initialInputText,
       isDark: isDark,
@@ -134,7 +139,6 @@ public struct EmbeddedTerminalView: NSViewRepresentable {
 
 /// Container view that manages the terminal lifecycle
 public class TerminalContainerView: NSView, ManagedLocalProcessTerminalViewDelegate {
-  private let piMinimumColumns = 200
   var terminalView: SafeLocalProcessTerminalView?
   private var isConfigured = false
   private var hasDeliveredInitialPrompt = false
@@ -175,7 +179,8 @@ public class TerminalContainerView: NSView, ManagedLocalProcessTerminalViewDeleg
     sessionId: String?,
     sessionFilePath: String? = nil,
     projectPath: String,
-    cliConfiguration: CLICommandConfiguration
+    cliConfiguration: CLICommandConfiguration,
+    commandTemplateId: String? = nil
   ) {
     terminateProcess()
     terminalView?.removeFromSuperview()
@@ -183,7 +188,13 @@ public class TerminalContainerView: NSView, ManagedLocalProcessTerminalViewDeleg
     isConfigured = false
     hasDeliveredInitialPrompt = false  // Reset for fresh start
     hasPrefilledInitialInputText = false
-    configure(sessionId: sessionId, sessionFilePath: sessionFilePath, projectPath: projectPath, cliConfiguration: cliConfiguration)
+    configure(
+      sessionId: sessionId,
+      sessionFilePath: sessionFilePath,
+      projectPath: projectPath,
+      cliConfiguration: cliConfiguration,
+      commandTemplateId: commandTemplateId
+    )
   }
 
   func configure(
@@ -191,6 +202,7 @@ public class TerminalContainerView: NSView, ManagedLocalProcessTerminalViewDeleg
     sessionFilePath: String? = nil,
     projectPath: String,
     cliConfiguration: CLICommandConfiguration,
+    commandTemplateId: String? = nil,
     initialPrompt: String? = nil,
     initialInputText: String? = nil,
     isDark: Bool = true,
@@ -205,8 +217,8 @@ public class TerminalContainerView: NSView, ManagedLocalProcessTerminalViewDeleg
     let terminal = SafeLocalProcessTerminalView(frame: bounds)
     terminal.translatesAutoresizingMaskIntoConstraints = false
     terminal.processDelegate = self
-    // pi TUI currently crashes in narrow widths on some CJK paths; keep PTY width stable.
-    terminal.minimumPTYColumns = isPiRuntime ? piMinimumColumns : 1
+    // Let PTY follow the actual viewport so resizing (zoom in/out) stays in sync.
+    terminal.minimumPTYColumns = 1
 
     // Configure terminal appearance
     configureTerminalAppearance(terminal, isDark: isDark)
@@ -231,6 +243,7 @@ public class TerminalContainerView: NSView, ManagedLocalProcessTerminalViewDeleg
       sessionFilePath: sessionFilePath,
       projectPath: projectPath,
       cliConfiguration: cliConfiguration,
+      commandTemplateId: commandTemplateId,
       initialPrompt: initialPrompt,
       dangerouslySkipPermissions: dangerouslySkipPermissions
     )
@@ -365,28 +378,68 @@ public class TerminalContainerView: NSView, ManagedLocalProcessTerminalViewDeleg
     sessionFilePath: String?,
     projectPath: String,
     cliConfiguration: CLICommandConfiguration,
+    commandTemplateId: String? = nil,
     initialPrompt: String? = nil,
     dangerouslySkipPermissions: Bool = false
   ) {
+    let templateService = CommandTemplateService.shared
+    let provider: SessionProviderKind = {
+      switch cliConfiguration.mode {
+      case .claude: return .claude
+      case .codex: return .codex
+      case .pi: return .pi
+      }
+    }()
+
+    let sessionIntent: TemplateIntent = {
+      if sessionId == nil || sessionId?.hasPrefix("pending-") == true {
+        return .startSession
+      }
+      return .resumeSession
+    }()
+
+    let selectedTemplate = commandTemplateId.flatMap { templateService.template(by: $0) }
+    let fallbackTemplate = selectedTemplate == nil
+      ? (templateService.lastUsedTemplate(for: provider, intent: sessionIntent)
+        ?? templateService.defaultTemplate(for: provider, intent: sessionIntent))
+      : nil
+    let activeTemplate = (selectedTemplate ?? fallbackTemplate).flatMap { $0.enabled ? $0 : nil }
+
+    let effectiveConfiguration: CLICommandConfiguration = {
+      guard let activeTemplate else { return cliConfiguration }
+      return CLICommandConfiguration(
+        command: templateService.resolvedExecutable(for: activeTemplate),
+        additionalPaths: cliConfiguration.additionalPaths,
+        mode: cliConfiguration.mode
+      )
+    }()
+
+    let normalizedConfiguration = normalizedInteractiveConfiguration(for: effectiveConfiguration)
+    let didNormalizeHappyRelay = normalizedConfiguration.command != effectiveConfiguration.command
+
+    terminal.suppressedOutputSubstrings = shouldSuppressHappyCodexBanner(normalizedConfiguration)
+      ? ["Using Claude Code"]
+      : []
+
     // Find the CLI executable using just the executable name (first word of command)
-    let command = cliConfiguration.command
-    let additionalPaths = cliConfiguration.additionalPaths
+    let command = normalizedConfiguration.command
+    let additionalPaths = normalizedConfiguration.additionalPaths
 
     let executablePath: String?
-    switch cliConfiguration.mode {
+    switch normalizedConfiguration.mode {
     case .codex:
       executablePath = TerminalLauncher.findCodexExecutable(
-        command: cliConfiguration.executableName,
+        command: normalizedConfiguration.executableName,
         additionalPaths: additionalPaths
       )
     case .pi:
       executablePath = TerminalLauncher.findCodexExecutable(
-        command: cliConfiguration.executableName,
+        command: normalizedConfiguration.executableName,
         additionalPaths: additionalPaths
       )
     case .claude:
       executablePath = TerminalLauncher.findExecutable(
-        command: cliConfiguration.executableName,
+        command: normalizedConfiguration.executableName,
         additionalPaths: additionalPaths
       )
     }
@@ -406,9 +459,6 @@ public class TerminalContainerView: NSView, ManagedLocalProcessTerminalViewDeleg
     environment["TERM"] = "xterm-256color"
     environment["COLORTERM"] = "truecolor"
     environment["LANG"] = "en_US.UTF-8"
-    if isPiRuntime {
-      environment["COLUMNS"] = "\(piMinimumColumns)"
-    }
 
     let paths = additionalPaths + [
       "/usr/local/bin",
@@ -450,33 +500,40 @@ public class TerminalContainerView: NSView, ManagedLocalProcessTerminalViewDeleg
     if !proxyKeys.isEmpty {
       AppLogger.session.debug("[CLIProxy] injectedKeys=\(proxyKeys.joined(separator: ","), privacy: .public)")
     }
-    if isPiRuntime {
-      AppLogger.session.debug(
-        "[PiProcess] minimumPTYColumns=\(self.piMinimumColumns, privacy: .public) command=\(command, privacy: .public)"
-      )
-    }
 #endif
 
     // Build command: resume existing session or start new session
-    var args = cliConfiguration.argumentsForSession(
+    var args = normalizedConfiguration.argumentsForSession(
       sessionId: sessionId,
       sessionFilePath: sessionFilePath,
       prompt: initialPrompt,
       dangerouslySkipPermissions: dangerouslySkipPermissions
     )
+    if let activeTemplate {
+      args = normalizedConfiguration.argumentsForTemplate(
+        activeTemplate,
+        context: .init(
+          prompt: initialPrompt,
+          sessionId: sessionId,
+          sessionFilePath: sessionFilePath,
+          projectPath: projectPath,
+          branch: nil
+        )
+      )
+      templateService.setLastUsedTemplate(id: activeTemplate.id, for: provider)
+    }
     if isPiRuntime {
       args = applyPiEmbeddedStabilityFlags(args, initialPrompt: initialPrompt)
     }
+
+    if didNormalizeHappyRelay {
+      terminal.feed(
+        text: "\r\n[AgentPi] '\(effectiveConfiguration.command)' is relay-only in local terminal. Using '\(normalizedConfiguration.command)' for interactive session.\r\n"
+      )
+    }
     let escapedArgs = args.map { $0.replacingOccurrences(of: "'", with: "'\\''") }
     let joinedArgs = escapedArgs.map { "'\($0)'" }.joined(separator: " ")
-    let preExecPrefix: String
-    if isPiRuntime {
-      // Pi TUI can crash in narrow widths when rendering CJK-heavy context lines.
-      // Keep a safe floor before handing control to the process.
-      preExecPrefix = "stty cols \(piMinimumColumns) rows 40 >/dev/null 2>&1 || true; export COLUMNS=\(piMinimumColumns); "
-    } else {
-      preExecPrefix = ""
-    }
+    let preExecPrefix = ""
 
     let shellCommand = joinedArgs.isEmpty
       ? "cd '\(escapedPath)' && \(preExecPrefix)exec '\(escapedCLIPath)'"
@@ -497,6 +554,23 @@ public class TerminalContainerView: NSView, ManagedLocalProcessTerminalViewDeleg
     TerminalProcessRegistry.shared.register(pid: pid)
   }
 
+  // MARK: - Layout (terminal resize)
+
+  public override func layout() {
+    super.layout()
+    // After Auto Layout updates our frame, ensure the terminal recalculates
+    // its grid dimensions. Without this, resizing the window (or split pane)
+    // leaves SwiftTerm's internal cols/rows stale until a manual refresh.
+    terminalView?.needsLayout = true
+  }
+
+  public override func viewDidEndLiveResize() {
+    super.viewDidEndLiveResize()
+    // SwiftTerm may defer full grid recalculation until live resize ends.
+    // Explicitly forward the event so it recomputes cols/rows and updates the PTY.
+    terminalView?.viewDidEndLiveResize()
+  }
+
   // MARK: - ManagedLocalProcessTerminalViewDelegate
 
   public func sizeChanged(source: ManagedLocalProcessTerminalView, newCols: Int, newRows: Int) {}
@@ -514,16 +588,45 @@ public class TerminalContainerView: NSView, ManagedLocalProcessTerminalViewDeleg
   }
 
   private func isPiLikeConfiguration(_ configuration: CLICommandConfiguration) -> Bool {
-    if configuration.mode == .pi {
-      return true
+    configuration.commandTokens.contains { $0.caseInsensitiveCompare("pi") == .orderedSame }
+  }
+
+  private func shouldSuppressHappyCodexBanner(_ configuration: CLICommandConfiguration) -> Bool {
+    guard configuration.mode == .codex else { return false }
+    let tokens = configuration.commandTokens
+    guard let executable = tokens.first else { return false }
+    guard executable.caseInsensitiveCompare("happy") == .orderedSame else { return false }
+    return tokens.dropFirst().contains { $0.caseInsensitiveCompare("codex") == .orderedSame }
+  }
+
+  private func normalizedInteractiveConfiguration(
+    for configuration: CLICommandConfiguration
+  ) -> CLICommandConfiguration {
+    if configuration.isHappyCodexRelayCommand {
+      return CLICommandConfiguration(
+        command: "codex",
+        additionalPaths: configuration.additionalPaths,
+        mode: .codex
+      )
     }
-    let executable = configuration.executableName.lowercased()
-    if executable == "pi" {
-      return true
+
+    if configuration.isHappyPiRelayCommand {
+      return CLICommandConfiguration(
+        command: "pi",
+        additionalPaths: configuration.additionalPaths,
+        mode: .pi
+      )
     }
-    return configuration.command.lowercased().contains(" pi")
-      || configuration.command.lowercased().hasPrefix("pi ")
-      || configuration.command.lowercased() == "pi"
+
+    if configuration.isHappyClaudeRelayCommand {
+      return CLICommandConfiguration(
+        command: "claude",
+        additionalPaths: configuration.additionalPaths,
+        mode: .claude
+      )
+    }
+
+    return configuration
   }
 
   private func applyPiEmbeddedStabilityFlags(_ args: [String], initialPrompt: String?) -> [String] {

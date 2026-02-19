@@ -17,7 +17,8 @@ public actor CodexSessionFileWatcher {
   private nonisolated let stateSubject = PassthroughSubject<SessionFileWatcher.StateUpdate, Never>()
   private let codexPath: String
   private nonisolated let processingQueue = DispatchQueue(label: "com.ring.agentpi.codexwatcher.processing")
-  private var approvalTimeoutSeconds: Int = 0
+  private var approvalTimeoutSeconds: Int = 5
+  private nonisolated(unsafe) var approvalTimeoutSecondsSnapshot: Int = 5
 
   public nonisolated var statePublisher: AnyPublisher<SessionFileWatcher.StateUpdate, Never> {
     stateSubject.eraseToAnyPublisher()
@@ -28,7 +29,11 @@ public actor CodexSessionFileWatcher {
   }
 
   public func setApprovalTimeout(_ seconds: Int) async {
-    self.approvalTimeoutSeconds = max(1, seconds)
+    let value = max(1, seconds)
+    self.approvalTimeoutSeconds = value
+    processingQueue.async { [value] in
+      self.approvalTimeoutSecondsSnapshot = value
+    }
   }
 
   public func startMonitoring(sessionId: String, projectPath: String, sessionFilePath: String? = nil) async {
@@ -64,7 +69,6 @@ public actor CodexSessionFileWatcher {
     )
 
     var filePosition = getFileSize(filePath)
-    let timeout = approvalTimeoutSeconds
     var lastFileEventTime = Date()
     var lastKnownFileSize = filePosition
     var lastEmittedStatus: SessionStatus = parseResult.currentStatus
@@ -76,6 +80,7 @@ public actor CodexSessionFileWatcher {
         let newLines = self.readNewLines(from: filePath, startingAt: &filePosition)
         lastKnownFileSize = filePosition
         guard !newLines.isEmpty else { return }
+        let timeout = self.approvalTimeoutSecondsSnapshot
         CodexSessionJSONLParser.parseNewLines(newLines, into: &parseResult, approvalTimeoutSeconds: timeout)
         lastEmittedStatus = parseResult.currentStatus
 
@@ -104,6 +109,7 @@ public actor CodexSessionFileWatcher {
           var tempPosition = lastKnownFileSize
           let newLines = self.readNewLines(from: filePath, startingAt: &tempPosition)
           if !newLines.isEmpty {
+            let timeout = self.approvalTimeoutSecondsSnapshot
             CodexSessionJSONLParser.parseNewLines(newLines, into: &parseResult, approvalTimeoutSeconds: timeout)
             lastKnownFileSize = tempPosition
             lastFileEventTime = Date()
@@ -113,9 +119,25 @@ public actor CodexSessionFileWatcher {
         }
 
         let previousStatus = lastEmittedStatus
+        let timeout = self.approvalTimeoutSecondsSnapshot
         CodexSessionJSONLParser.updateCurrentStatus(&parseResult, approvalTimeoutSeconds: timeout)
 
         if parseResult.currentStatus != lastEmittedStatus {
+          if case .awaitingApproval(let tool) = parseResult.currentStatus,
+             !self.isAwaitingApproval(previousStatus) {
+            let lastMessage = parseResult.recentActivities
+              .last(where: { if case .userMessage = $0.type { return true }; return false })?
+              .description
+
+            ApprovalNotificationService.shared.sendApprovalNotification(
+              sessionId: sessionId,
+              toolName: tool,
+              projectPath: filePath,
+              model: parseResult.model,
+              lastMessage: lastMessage
+            )
+          }
+
           lastEmittedStatus = parseResult.currentStatus
           let updatedState = self.buildMonitorState(from: parseResult)
 
@@ -203,9 +225,23 @@ public actor CodexSessionFileWatcher {
   }
 
   private nonisolated func buildMonitorState(from result: CodexSessionJSONLParser.ParseResult) -> SessionMonitorState {
+    let latestPending = result.pendingToolUses.values.max { $0.timestamp < $1.timestamp }
+    let pendingToolUse: PendingToolUse?
+    if let latestPending {
+      pendingToolUse = PendingToolUse(
+        toolName: latestPending.toolName,
+        toolUseId: latestPending.toolUseId,
+        timestamp: latestPending.timestamp,
+        input: latestPending.input,
+        codeChangeInput: latestPending.codeChangeInput
+      )
+    } else {
+      pendingToolUse = nil
+    }
+
     return SessionMonitorState(
       status: result.currentStatus,
-      currentTool: result.pendingToolUses.first?.value.toolName,
+      currentTool: pendingToolUse?.toolName,
       lastActivityAt: result.lastActivityAt ?? Date(),
       inputTokens: result.lastInputTokens,
       outputTokens: result.lastOutputTokens,
@@ -217,9 +253,14 @@ public actor CodexSessionFileWatcher {
       sessionStartedAt: result.sessionStartedAt,
       model: result.model,
       gitBranch: nil,
-      pendingToolUse: nil,
+      pendingToolUse: pendingToolUse,
       recentActivities: result.recentActivities
     )
+  }
+
+  private nonisolated func isAwaitingApproval(_ status: SessionStatus) -> Bool {
+    if case .awaitingApproval = status { return true }
+    return false
   }
 }
 

@@ -20,9 +20,13 @@ public protocol ManagedLocalProcessTerminalViewDelegate: AnyObject {
 /// Local-process terminal view with explicit process control.
 open class ManagedLocalProcessTerminalView: TerminalView, TerminalViewDelegate, LocalProcessDelegate {
   private var process: LocalProcess!
+  private var outputLineBuffer: String = ""
 
   /// Delegate for process-related events.
   public weak var processDelegate: ManagedLocalProcessTerminalViewDelegate?
+
+  /// Plain-text markers used to suppress noisy wrapper banners from specific CLIs.
+  public var suppressedOutputSubstrings: [String] = []
 
   /// Minimum PTY columns to report to child process.
   /// Useful for CLIs that are unstable in very narrow terminal widths.
@@ -54,6 +58,13 @@ open class ManagedLocalProcessTerminalView: TerminalView, TerminalViewDelegate, 
     guard process.running else { return }
     var size = getWindowSize()
     let _ = PseudoTerminalHelpers.setWinSize(masterPtyDescriptor: process.childfd, windowSize: &size)
+    // Notify the child process group about the resize so TUI apps reflow immediately.
+    let pid = process.shellPid
+    if pid > 0 {
+      if killpg(pid, SIGWINCH) != 0 {
+        _ = kill(pid, SIGWINCH)
+      }
+    }
     processDelegate?.sizeChanged(source: self, newCols: Int(size.ws_col), newRows: newRows)
   }
 
@@ -63,6 +74,37 @@ open class ManagedLocalProcessTerminalView: TerminalView, TerminalViewDelegate, 
       pasteBoard.clearContents()
       pasteBoard.writeObjects([str as NSString])
     }
+  }
+
+  public override func paste(_ sender: Any?) {
+    let pasteboard = NSPasteboard.general
+
+    if let urls = pasteboard.readObjects(
+      forClasses: [NSURL.self],
+      options: [.urlReadingFileURLsOnly: true]
+    ) as? [URL],
+       let url = urls.first {
+      sendPathToTerminal(url.path)
+      return
+    }
+
+    if let imageData =
+        pasteboard.data(forType: .png)
+        ?? pasteboard.data(forType: .tiff)
+        ?? pasteboard.data(forType: NSPasteboard.PasteboardType("public.jpeg")),
+       let url = writeImageDataToTemp(imageData) {
+      sendPathToTerminal(url.path)
+      return
+    }
+
+    if let images = pasteboard.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage],
+       let image = images.first,
+       let url = writeImageToTemp(image) {
+      sendPathToTerminal(url.path)
+      return
+    }
+
+    super.paste(sender as Any)
   }
 
   public func setTerminalTitle(source: TerminalView, title: String) {
@@ -122,11 +164,53 @@ open class ManagedLocalProcessTerminalView: TerminalView, TerminalViewDelegate, 
   // MARK: - LocalProcessDelegate
 
   open func processTerminated(_ source: LocalProcess, exitCode: Int32?) {
+    flushOutputLineBuffer()
     processDelegate?.processTerminated(source: self, exitCode: exitCode)
   }
 
   open func dataReceived(slice: ArraySlice<UInt8>) {
-    feed(byteArray: slice)
+    guard !suppressedOutputSubstrings.isEmpty else {
+      feed(byteArray: slice)
+      return
+    }
+
+    guard let chunk = String(bytes: slice, encoding: .utf8) else {
+      feed(byteArray: slice)
+      return
+    }
+
+    outputLineBuffer.append(chunk)
+    drainOutputLineBuffer()
+  }
+
+  private func drainOutputLineBuffer() {
+    while let newlineRange = outputLineBuffer.range(of: "\n") {
+      let line = String(outputLineBuffer[..<newlineRange.upperBound])
+      outputLineBuffer.removeSubrange(outputLineBuffer.startIndex..<newlineRange.upperBound)
+      if shouldSuppressOutputLine(line) {
+        continue
+      }
+      feed(text: line)
+    }
+  }
+
+  private func flushOutputLineBuffer() {
+    guard !outputLineBuffer.isEmpty else { return }
+    if !shouldSuppressOutputLine(outputLineBuffer) {
+      feed(text: outputLineBuffer)
+    }
+    outputLineBuffer.removeAll(keepingCapacity: true)
+  }
+
+  private func shouldSuppressOutputLine(_ line: String) -> Bool {
+    suppressedOutputSubstrings.contains { marker in
+      line.localizedCaseInsensitiveContains(marker)
+    }
+  }
+
+  open override func removeFromSuperview() {
+    flushOutputLineBuffer()
+    super.removeFromSuperview()
   }
 
   open func getWindowSize() -> winsize {
@@ -138,5 +222,36 @@ open class ManagedLocalProcessTerminalView: TerminalView, TerminalViewDelegate, 
       ws_xpixel: UInt16(f.width),
       ws_ypixel: UInt16(f.height)
     )
+  }
+
+  // MARK: - Clipboard Helpers
+
+  private func sendPathToTerminal(_ path: String) {
+    let quotedPath = path.contains(" ") ? "\"\(path)\"" : path
+    send(txt: quotedPath + " ")
+  }
+
+  private func writeImageDataToTemp(_ data: Data) -> URL? {
+    if let image = NSImage(data: data) {
+      return writeImageToTemp(image)
+    }
+    return nil
+  }
+
+  private func writeImageToTemp(_ image: NSImage) -> URL? {
+    guard let tiff = image.tiffRepresentation,
+          let bitmap = NSBitmapImageRep(data: tiff),
+          let pngData = bitmap.representation(using: .png, properties: [:]) else {
+      return nil
+    }
+
+    let tempURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent("pasted_image_\(UUID().uuidString).png")
+    do {
+      try pngData.write(to: tempURL)
+      return tempURL
+    } catch {
+      return nil
+    }
   }
 }

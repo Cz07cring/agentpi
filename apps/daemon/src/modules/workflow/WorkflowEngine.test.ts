@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { ApprovalDecision, WorkflowGraphV1 } from "@agentpi/protocol";
+import type { ApprovalDecision, WorkflowGraphV1, WsEvent } from "@agentpi/protocol";
 import { DaemonEventBus } from "../../lib/event-bus.js";
 import { PersistenceStore } from "../storage/PersistenceStore.js";
 import type { SessionManager } from "../session/SessionManager.js";
@@ -124,6 +124,54 @@ describe("WorkflowEngine", () => {
     expect(finalState.status).toBe("completed");
   });
 
+  it("clears pending approval on timeout and emits resolved with reason", async () => {
+    const store = createStore();
+    const bus = new DaemonEventBus();
+    const sessions = {
+      createSession: vi.fn(async () => ({ sessionId: randomUUID(), binding: {} })),
+      prompt: vi.fn(async () => {}),
+      waitIdle: vi.fn(async () => ({
+        sessionId: "af037428-b4c5-4043-a61e-5b78e5aa7086",
+        runtimeVersion: "0.52.12",
+        status: "idle",
+        isStreaming: false,
+      })),
+    } as unknown as SessionManager;
+
+    const events: WsEvent[] = [];
+    bus.onWs((event) => events.push(event));
+
+    const engine = new WorkflowEngine(store, sessions, bus);
+    const workflowId = engine.createWorkflow({
+      version: 1,
+      name: "approval-timeout",
+      nodes: [
+        { id: "start", type: "start", label: "Start", config: {} },
+        { id: "approval", type: "approval", label: "Approval", config: { policy: "always", blocking: true, timeoutMs: 25 } },
+        { id: "end", type: "end", label: "End", config: { success: true } },
+      ],
+      edges: [
+        { id: "e1", source: "start", target: "approval" },
+        { id: "e2", source: "approval", target: "end" },
+      ],
+    } satisfies WorkflowGraphV1);
+
+    const state = await engine.runWorkflow(workflowId, {
+      sessionId: "af037428-b4c5-4043-a61e-5b78e5aa7086",
+    });
+
+    expect(state.status).toBe("failed");
+    expect(state.pendingApprovalId).toBeUndefined();
+    expect(events.some((event) => event.type === "approval.resolved" && event.decision === "rejected" && event.reason === "timeout")).toBe(true);
+    const pendingEvent = events.find((event) => event.type === "approval.pending") as
+      | Extract<WsEvent, { type: "approval.pending" }>
+      | undefined;
+    expect(pendingEvent?.requestId).toBeDefined();
+    expect(pendingEvent?.expiresAt).toBeDefined();
+    const timeoutNodeResult = (state.nodeResults ?? []).find((r) => r.nodeId === "approval" && r.status === "failed");
+    expect(timeoutNodeResult?.error).toMatch(/timed out/i);
+  });
+
   it("fails safely on invalid condition expressions", async () => {
     const store = createStore();
     const bus = new DaemonEventBus();
@@ -158,6 +206,49 @@ describe("WorkflowEngine", () => {
     });
     expect(state.status).toBe("failed");
     expect(state.error).toMatch(/Condition evaluation failed/);
+  });
+
+  it("does not drop node results when parallel branches complete", async () => {
+    const store = createStore();
+    const bus = new DaemonEventBus();
+    const sessions = {
+      createSession: vi.fn(async () => ({ sessionId: randomUUID(), binding: {} })),
+      prompt: vi.fn(async () => {}),
+      waitIdle: vi.fn(async () => ({
+        sessionId: "af037428-b4c5-4043-a61e-5b78e5aa7086",
+        runtimeVersion: "0.52.12",
+        status: "idle",
+        isStreaming: false,
+      })),
+    } as unknown as SessionManager;
+
+    const engine = new WorkflowEngine(store, sessions, bus);
+    const workflowId = engine.createWorkflow({
+      version: 1,
+      name: "parallel-results",
+      nodes: [
+        { id: "start", type: "start", label: "Start", config: {} },
+        { id: "parallel", type: "parallel", label: "Parallel", config: { maxConcurrency: 2 } },
+        { id: "prompt-a", type: "prompt", label: "Prompt A", config: { prompt: "a" } },
+        { id: "prompt-b", type: "prompt", label: "Prompt B", config: { prompt: "b" } },
+        { id: "end", type: "end", label: "End", config: { success: true } },
+      ],
+      edges: [
+        { id: "e1", source: "start", target: "parallel" },
+        { id: "e2", source: "parallel", target: "prompt-a" },
+        { id: "e3", source: "parallel", target: "prompt-b" },
+        { id: "e4", source: "prompt-a", target: "end" },
+        { id: "e5", source: "prompt-b", target: "end" },
+      ],
+    } satisfies WorkflowGraphV1);
+
+    const state = await engine.runWorkflow(workflowId, {
+      sessionId: "af037428-b4c5-4043-a61e-5b78e5aa7086",
+    });
+
+    const promptResults = (state.nodeResults ?? []).filter((r) => r.nodeId === "prompt-a" || r.nodeId === "prompt-b");
+    expect(promptResults.length).toBe(2);
+    expect(state.status).toBe("completed");
   });
 });
 

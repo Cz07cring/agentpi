@@ -108,6 +108,24 @@ export class SessionManager {
       this.onRpcEvent(sessionId, event);
     });
 
+    rpc.on("close", () => {
+      const active = this.sessions.get(sessionId);
+      if (active) {
+        active.runtimeState = {
+          ...active.runtimeState,
+          status: "closed",
+          isStreaming: false,
+          lastEventAt: new Date().toISOString(),
+        };
+        this.persistRuntimeState(active);
+        this.bus.emitWs({
+          type: "session.event",
+          sessionId,
+          event: { type: "rpc_closed" },
+        });
+      }
+    });
+
     this.persistSessionState(managed, {});
     this.persistRuntimeState(managed);
 
@@ -121,6 +139,7 @@ export class SessionManager {
 
   async prompt(sessionId: string, input: SessionPromptRequest): Promise<void> {
     const session = this.get(sessionId);
+    this.assertNotClosed(session);
     this.markSessionRunning(session);
     await session.rpc.send("prompt", {
       message: input.message,
@@ -131,24 +150,31 @@ export class SessionManager {
 
   async steer(sessionId: string, input: SessionPromptRequest): Promise<void> {
     const session = this.get(sessionId);
+    this.assertNotClosed(session);
     this.markSessionRunning(session);
     await session.rpc.send("steer", {
       message: input.message,
       images: input.images,
+      streamingBehavior: input.streamingBehavior,
     });
   }
 
   async followUp(sessionId: string, input: SessionPromptRequest): Promise<void> {
     const session = this.get(sessionId);
+    this.assertNotClosed(session);
     this.markSessionRunning(session);
     await session.rpc.send("follow_up", {
       message: input.message,
       images: input.images,
+      streamingBehavior: input.streamingBehavior,
     });
   }
 
   async abort(sessionId: string): Promise<void> {
     const session = this.get(sessionId);
+    if (session.runtimeState.status === "closed") {
+      return; // Already closed — nothing to abort.
+    }
     await session.rpc.send("abort");
     session.runtimeState = {
       ...session.runtimeState,
@@ -179,8 +205,12 @@ export class SessionManager {
   async getRuntimeState(sessionId: string, refresh = false): Promise<SessionRuntimeState> {
     const active = this.sessions.get(sessionId);
     if (active) {
-      if (refresh) {
-        await this.getState(sessionId);
+      if (refresh && active.runtimeState.status !== "closed") {
+        try {
+          await this.getState(sessionId);
+        } catch {
+          // RPC may have crashed; return current in-memory state as-is.
+        }
       }
       return { ...active.runtimeState };
     }
@@ -204,7 +234,7 @@ export class SessionManager {
 
     while (Date.now() <= deadline) {
       const runtimeState = await this.getRuntimeState(sessionId, true);
-      if (!runtimeState.isStreaming) {
+      if (!runtimeState.isStreaming || runtimeState.status === "closed") {
         return runtimeState;
       }
 
@@ -226,6 +256,7 @@ export class SessionManager {
     };
     this.persistRuntimeState(session);
     this.sessions.delete(sessionId);
+    this.stats.removeSession(sessionId);
   }
 
   listSessionIds(): string[] {
@@ -240,8 +271,15 @@ export class SessionManager {
     return session;
   }
 
+  private assertNotClosed(session: ManagedSession): void {
+    if (session.runtimeState.status === "closed") {
+      throw new Error(`Session ${session.id} is closed`);
+    }
+  }
+
   private onRpcEvent(sessionId: string, event: Record<string, unknown>): void {
-    const session = this.get(sessionId);
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
     const eventType = String(event.type ?? "");
     const now = new Date().toISOString();
 
@@ -262,11 +300,11 @@ export class SessionManager {
       };
       this.persistRuntimeState(session);
     } else {
+      // Intermediate streaming events: update memory only, skip SQLite write.
       session.runtimeState = {
         ...session.runtimeState,
         lastEventAt: now,
       };
-      this.persistRuntimeState(session);
     }
 
     this.bus.emitWs({
