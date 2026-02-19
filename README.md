@@ -87,7 +87,7 @@ Supports placeholders (`{{prompt}}`, `{{project_path}}`, `{{handoff_jsonl}}`), c
 Worktree management, branch-based session launching, pending changes preview, and inline diff review.
 
 ### Developer UX
-Command palette (**Cmd+K**), web preview panel, plan view, global full-text search, drag-and-drop file attachments, dev server management, and multi-column layouts.
+Command palette (**Cmd+K**), web preview panel, plan view, global full-text search, drag-and-drop file attachments, dev server management, proxy injection, and multi-column layouts.
 
 ### Customizable Themes & i18n
 YAML themes with hot-reload. Built-in themes: **Claude**, **Codex**, **Bat**, **Xcode**.
@@ -278,6 +278,25 @@ All session launching, batch execution, and mobile relay commands are driven by 
 | `{{branch}}` | Current git branch name |
 
 Create custom templates, reorder them, and set per-provider defaults from **Settings → Command Templates**.
+
+---
+
+## Batch Task Runner
+
+The batch runner executes non-interactive commands defined by `batch_run` templates. Unlike interactive sessions, batch tasks run as headless subprocesses with piped I/O.
+
+- **Real-time streaming** — stdout and stderr are captured and displayed live in the Batch Runs panel
+- **Process management** — each task tracks its PID; stop sends SIGTERM, rerun re-launches from the same template
+- **`happy` auto-detection** — if a `happy` relay command is used as a batch template, AgentPi automatically falls back to the native CLI for local execution
+- **CI environment** — batch tasks run with `CI=1` and `GIT_TERMINAL_PROMPT=0` to prevent interactive prompts from blocking execution
+
+---
+
+## Proxy Support
+
+AgentPi supports configurable proxy injection for CLI sessions. When enabled, proxy environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`) are automatically set in the spawned process environment.
+
+Configure proxy settings in **Settings → Network** or via `ProxyEnvironment` defaults.
 
 ---
 
