@@ -56,8 +56,14 @@ Claude Code、Codex 和 pi-mono 会话并排运行。支持手动 prompt 或 AI 
 **DAG 工作流引擎**
 基于有向无环图的执行引擎，支持并行节点、条件分支、审批门控和安全表达式求值。
 
+**智能编排**
+通过 ClaudeCodeSDK 实现 AI 驱动的并行任务规划，自动生成并启动多 Agent 会话。
+
 **Git 集成**
 Worktree 管理、基于分支启动会话、内联 diff 审查、待定变更预览。
+
+**移动中继**
+一键将任务从一个 Provider 会话移交到另一个，保留完整上下文产物。
 
 **开发体验**
 命令面板（Cmd+K）、Web 预览、计划视图、全局搜索、拖拽文件附件。
@@ -151,8 +157,17 @@ agentpi/
 ├── external/
 │   └── AgentPi/                   # macOS 原生客户端（Swift / SwiftUI）
 │       └── app/modules/AgentPiCore/  # 核心框架（110+ Swift 源文件）
+│           └── Sources/AgentPi/
+│               ├── Configuration/    # 服务定位器、默认值、环境配置
+│               ├── Design/           # 主题系统（YAML 解析、热重载）
+│               ├── Models/           # 会话、状态、费用、中继模型
+│               ├── Services/         # 文件监听、Git、搜索、终端服务
+│               ├── UI/              # 40+ SwiftUI 视图
+│               ├── ViewModels/      # @MainActor 视图模型
+│               └── Utils/           # 日志、代理、评分工具
 ├── scripts/                       # 构建、数据注入、诊断脚本
-└── docs/                          # 构建、测试、排障文档
+├── docs/                          # 构建、测试、排障文档
+└── .github/workflows/             # CI 与发布流水线
 ```
 
 ## 技术栈
@@ -160,16 +175,21 @@ agentpi/
 | 组件 | 技术 |
 |---|---|
 | **macOS 客户端** | Swift 6.0, SwiftUI, AppKit, Combine, `@Observable` |
-| **Daemon** | Node.js 22, Express 5, WebSocket, SQLite |
+| **并发模型** | Swift actors, `async/await`, `withTaskGroup`, `@MainActor` |
+| **Daemon** | Node.js 22, Express 5, WebSocket (`ws`), SQLite (`node:sqlite`) |
 | **协议层** | TypeScript 5.9, Zod 4 |
-| **文件监听** | kqueue (DispatchSource)，零轮询 |
+| **持久化** | GRDB.swift（客户端）+ `node:sqlite`（Daemon） |
+| **文件监听** | kqueue (DispatchSource)，零轮询，字节偏移增量读取 |
 | **终端** | SwiftTerm (PTY 仿真) |
 | **Diff 渲染** | PierreDiffsSwift（分栏视图） |
-| **Markdown** | swift-markdown-ui, PierreMD |
-| **AI 集成** | ClaudeCodeSDK |
+| **语法高亮** | HighlightSwift |
+| **Markdown** | swift-markdown-ui |
+| **主题解析** | Yams（YAML） |
+| **AI 集成** | ClaudeCodeSDK 1.2.4 |
 | **自动更新** | Sparkle（EdDSA 签名） |
-| **测试** | Vitest（Daemon）, XCTest（macOS） |
+| **测试** | Vitest（Daemon/协议层）, XCTest（macOS） |
 | **CI/CD** | GitHub Actions |
+| **Monorepo** | npm workspaces |
 
 ## API 概览
 
@@ -304,4 +324,4 @@ AgentPi 兼容 [pi-mono](https://github.com/badlogic/pi-mono) — 由 [@badlogic
 
 ## 许可证
 
-[MIT](LICENSE) &copy; 2025 ring
+[MIT](LICENSE) &copy; 2026 ring
