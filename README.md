@@ -9,7 +9,7 @@
 
 ### The Mission Control for AI Coding Agents
 
-Monitor, orchestrate, and review **Claude Code**, **Codex CLI** & **[pi-mono](https://github.com/badlogic/pi-mono)** sessions — all in real time, all on your machine.
+Monitor, orchestrate, and review **Claude Code**, **Codex CLI**, and **[pi-mono](https://github.com/badlogic/pi-mono)** sessions — all in real time, all on your machine.
 
 **[English](README.md)** | **[中文](README.zh-CN.md)**
 
@@ -43,12 +43,12 @@ Running multiple AI coding agents across projects gets messy fast. Context windo
 <td width="50%" valign="top">
 
 ### Real-time Monitoring
-Live session updates via kqueue file-system watchers — zero polling.
+Live session updates via kqueue file-system watchers — zero polling, byte-offset incremental reads.
 Status indicators, token counts, tool activity feed, and context window usage at a glance.
 
 ### Multi-Provider Orchestration
-Run Claude Code, Codex CLI, and pi-mono sessions side by side.
-Launch parallel agents with manual prompts or AI-planned orchestration.
+Run Claude Code, Codex CLI, and pi-mono sessions side by side — all as first-class citizens.
+Launch parallel agents with manual prompts or AI-planned orchestration across git worktrees.
 
 ### Inline Diff Review
 Split-pane diff viewer with syntax highlighting.
@@ -58,29 +58,44 @@ Built-in inline editor to review changes and send feedback directly to agents.
 Full PTY terminal (SwiftTerm) inside each session card.
 Resume or start sessions without ever leaving the app.
 
-### Mobile Relay
-Handoff tasks to remote agents from mobile devices.
-Track task progress and manage artifacts across sessions.
+### Mobile Relay & `happy` CLI
+One-click handoff of tasks between providers (Claude &harr; Codex &harr; Pi).
+Generates JSONL + Markdown handoff artifacts preserving full session context.
+Powered by the [`happy`](#mobile-relay--happy-cli-1) CLI wrapper with intelligent detection and fallback.
+
+### Batch Task Runner
+Run non-interactive one-off commands from configurable templates.
+Real-time stdout/stderr streaming, stop/rerun controls, elapsed time tracking.
+CI-safe execution with automatic `happy` relay fallback.
 
 </td>
 <td width="50%" valign="top">
 
+### Smart Orchestration
+AI-driven parallel session planning via ClaudeCodeSDK.
+Three modes: **Parallel**, **Prototype**, and **Exploration**.
+Claude generates a structured plan, AgentPi spawns sessions across git worktrees automatically.
+
 ### DAG Workflow Engine
 Execution graphs with parallel nodes, conditional branching, approval gates, and safe expression evaluation.
+
+### Unified Command Templates
+Single template system for all providers and intents — `start_session`, `resume_session`, `batch_run`, `mobile_relay`.
+Supports placeholders (`{{prompt}}`, `{{project_path}}`, `{{handoff_jsonl}}`), custom executables, drag-to-reorder, enable/disable.
 
 ### Git Integration
 Worktree management, branch-based session launching, pending changes preview, and inline diff review.
 
 ### Developer UX
-Command palette (**Cmd+K**), web preview panel, plan view, global full-text search, drag-and-drop file attachments, and multi-column layouts.
+Command palette (**Cmd+K**), web preview panel, plan view, global full-text search, drag-and-drop file attachments, dev server management, and multi-column layouts.
 
-### Customizable Themes
-YAML themes with hot-reload. Ships with built-in themes: **Claude**, **Codex**, **Bat**, **Xcode**.
-Notification sounds, menu bar or popover mode.
+### Customizable Themes & i18n
+YAML themes with hot-reload. Built-in themes: **Claude**, **Codex**, **Bat**, **Xcode**.
+Localized in 5 languages: English, 简体中文, 日本語, 한국어, Tiếng Việt.
 
 ### Auto-Updates
 Sparkle-powered updates with EdDSA signature verification.
-Stay current without manual downloads.
+One-command local release flow with DMG distribution.
 
 </td>
 </tr>
@@ -98,6 +113,7 @@ Stay current without manual downloads.
 | **Node.js >= 22** | [Download](https://nodejs.org/) |
 | **Claude Code CLI** | Installed & authenticated — [Setup guide](https://docs.anthropic.com/en/docs/claude-code) |
 | **Codex CLI** *(optional)* | [Setup guide](https://openai.com/index/introducing-codex/) |
+| **happy CLI** *(optional)* | Enables cross-provider Mobile Relay |
 
 ### Install & Run
 
@@ -147,8 +163,9 @@ npm run mac:demo
 │                  Node.js 22 · Express 5 · WS                     │
 │                                                                  │
 │    SessionManager  ·  WorkflowEngine  ·  TerminalService         │
-│    WorktreeService ·  RuntimeUpdater  ·  RpcProcessPool          │
-│    SearchIndexer   ·  StatsAggregator ·  PersistenceStore        │
+│    WorktreeService ·  PiRuntimeUpdater ·  RpcProcessPool         │
+│    SearchIndexer   ·  StatsAggregator  ·  PersistenceStore       │
+│    DevServerService ·  DaemonEventBus                            │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -160,19 +177,132 @@ npm run mac:demo
 
 ---
 
+## Mobile Relay & `happy` CLI
+
+AgentPi integrates with the **`happy` CLI wrapper** to enable seamless cross-provider handoff:
+
+```
+Claude  → Codex    happy codex --project {{project_path}} --handoff {{handoff_jsonl}}
+Claude  → Pi       happy pi --project {{project_path}} --handoff {{handoff_jsonl}}
+Codex   → Claude   happy --project {{project_path}} --handoff {{handoff_jsonl}}
+Codex   → Pi       happy pi --project {{project_path}} --handoff {{handoff_jsonl}}
+Pi      → Claude   happy --project {{project_path}} --handoff {{handoff_jsonl}}
+Pi      → Codex    happy codex --project {{project_path}} --handoff {{handoff_jsonl}}
+```
+
+**How it works:**
+
+1. Click the relay button on any active session
+2. AgentPi captures the session's prompt, conversation history, project path, and git branch
+3. Two handoff artifacts are written to `{project}/.agentpi/mobile-relay/{YYYY-MM-DD}/`:
+   - **JSONL** — machine-readable state (session ID, providers, prompt, timestamps)
+   - **Markdown** — human-readable summary with context, diffs, and instructions
+4. The target agent launches via `happy` with full context preserved
+
+**Smart Fallback:** When a `happy` relay command is used as a batch template, AgentPi automatically detects it and falls back to the native CLI (`claude`, `codex`, `pi`), ensuring commands run reliably without the external terminal dependency.
+
+---
+
+## Smart Orchestration
+
+AgentPi uses **ClaudeCodeSDK** to enable AI-driven parallel session planning. Describe your goal and Claude generates a structured orchestration plan:
+
+```json
+{
+  "modulePath": "/path/to/project",
+  "sessions": [
+    {
+      "description": "Implement user authentication module",
+      "branchName": "feat/auth-module",
+      "sessionType": "parallel",
+      "prompt": "Implement JWT-based authentication..."
+    },
+    {
+      "description": "Add database migration scripts",
+      "branchName": "feat/db-migrations",
+      "sessionType": "parallel",
+      "prompt": "Create migration scripts for..."
+    }
+  ]
+}
+```
+
+AgentPi spawns each session in its own **git worktree**, running them in parallel across branches:
+
+| Mode | Use Case |
+|:---|:---|
+| **Parallel** | Same task split across different modules or files |
+| **Prototype** | Same goal with different implementation approaches |
+| **Exploration** | Related but distinct features explored simultaneously |
+
+---
+
+## Command Templates
+
+All session launching, batch execution, and mobile relay commands are driven by a **unified template system** (`AgentCommandTemplateV1`). Templates are configurable per provider and intent.
+
+### Template Intents
+
+| Intent | Description |
+|:---|:---|
+| `start_session` | Launch an interactive PTY session |
+| `resume_session` | Resume an existing session |
+| `batch_run` | One-off non-interactive command |
+| `mobile_relay` | Mobile handoff via external terminal |
+
+### Built-in Templates
+
+| Provider | Template | Intent | Command |
+|:---|:---|:---|:---|
+| Claude | Session Fast | start_session | `claude --dangerously-skip-permissions {{prompt}}` |
+| Claude | Batch Fast | batch_run | `claude -p {{prompt}} --dangerously-skip-permissions` |
+| Claude | Batch Stream Verbose | batch_run | `claude -p {{prompt}} --output-format stream-json --verbose` |
+| Claude | Mobile Relay | mobile_relay | `happy --project {{project_path}} --handoff {{handoff_jsonl}}` |
+| Codex | Session Fast | start_session | `codex {{prompt}}` |
+| Codex | Session Aggressive | start_session | `codex --full-auto {{prompt}}` |
+| Codex | Batch JSONL | batch_run | `codex exec {{prompt}} --json` |
+| Codex | Mobile Relay | mobile_relay | `happy codex --project {{project_path}} --handoff {{handoff_jsonl}}` |
+| Pi | Session Stable | start_session | `pi --no-extensions --no-skills --no-themes {{prompt}}` |
+| Pi | Batch Fast | batch_run | `pi -p {{prompt}} --no-extensions --no-skills --no-themes` |
+| Pi | Mobile Relay | mobile_relay | `happy pi --project {{project_path}} --handoff {{handoff_jsonl}}` |
+
+### Placeholders
+
+| Placeholder | Replaced With |
+|:---|:---|
+| `{{prompt}}` | User prompt text |
+| `{{project_path}}` | Absolute path to the project directory |
+| `{{handoff_jsonl}}` | Path to the generated JSONL handoff artifact |
+| `{{handoff_markdown}}` | Path to the generated Markdown handoff artifact |
+| `{{session_id}}` | Current session ID |
+| `{{branch}}` | Current git branch name |
+
+Create custom templates, reorder them, and set per-provider defaults from **Settings → Command Templates**.
+
+---
+
 ## Project Structure
 
 ```
 agentpi/
 ├── apps/
 │   └── daemon/                       # Local Node.js server (Express + WebSocket)
-│       └── src/modules/              # Session, Workflow, Terminal, Search, Stats ...
+│       └── src/modules/              # Session, Workflow, Terminal, Search, Stats, DevServer
 ├── packages/
 │   └── protocol/                     # Shared Zod schemas & TypeScript types
 ├── external/
 │   └── AgentPi/                      # macOS native client (Swift / SwiftUI)
-│       ├── app/modules/AgentPiCore/  # Core framework (120+ Swift sources)
-│       └── build/                    # Release artifacts & DMG
+│       └── app/modules/AgentPiCore/  # Core framework (120+ Swift sources)
+│           └── Sources/AgentPi/
+│               ├── Configuration/    # Service locator, defaults, environment
+│               ├── Design/           # Theme system (YAML parsing, hot-reload)
+│               ├── Intelligence/     # Smart orchestration via ClaudeCodeSDK
+│               ├── Models/           # Session, state, cost, relay, template models
+│               ├── Services/         # File watchers, Git, search, terminal, batch, relay
+│               ├── UI/              # 40+ SwiftUI views
+│               ├── ViewModels/      # @MainActor view models
+│               ├── Utils/           # Logging, proxy, scoring, L10n
+│               └── Resources/       # Localization (en, zh-Hans, ja, ko, vi)
 ├── scripts/                          # Build, seed, diagnostic scripts
 ├── docs/                             # Build, testing, troubleshooting guides
 └── .github/workflows/                # CI/CD pipelines
@@ -185,17 +315,21 @@ agentpi/
 | Component | Technology |
 |:---|:---|
 | **macOS Client** | Swift 6.0, SwiftUI, AppKit, Combine, `@Observable` macro |
-| **Daemon** | Node.js 22, Express 5, WebSocket (ws), SQLite |
+| **Concurrency** | Swift actors, `async/await`, `withTaskGroup`, `@MainActor` |
+| **Daemon** | Node.js 22, Express 5, WebSocket (`ws`), SQLite (`node:sqlite`) |
 | **Protocol** | TypeScript 5.9, Zod 4 |
-| **File Watching** | kqueue via DispatchSource (zero polling) |
+| **Persistence** | GRDB.swift (client) + `node:sqlite` (daemon) |
+| **File Watching** | kqueue via DispatchSource — zero polling, byte-offset incremental reads |
 | **Terminal** | SwiftTerm (PTY emulation) |
-| **Diff Rendering** | PierreDiffsSwift (split-pane) |
+| **Diff Rendering** | PierreDiffsSwift (split-pane with inline editor) |
 | **Markdown** | swift-markdown-ui |
 | **Syntax Highlighting** | HighlightSwift |
-| **AI Integration** | ClaudeCodeSDK |
+| **Theme Parsing** | Yams (YAML hot-reload) |
+| **AI Integration** | ClaudeCodeSDK 1.2.4 |
+| **CLI Compatibility** | `happy` wrapper (auto-detection & native fallback) |
 | **Auto-Updates** | Sparkle (EdDSA signed) |
-| **Persistence** | GRDB.swift (SQLite ORM) |
-| **Testing** | Vitest (daemon), XCTest (native client) |
+| **Testing** | Vitest (daemon/protocol), XCTest (macOS client) |
+| **Monorepo** | npm workspaces |
 | **CI/CD** | GitHub Actions |
 
 ---
@@ -217,12 +351,13 @@ The daemon exposes a REST + WebSocket API on `localhost:43210`.
 | `POST` | `/v1/sessions/:id/abort` | Abort the running agent |
 | `POST` | `/v1/sessions/:id/wait-idle` | Block until session idle (max 60s) |
 | `GET` | `/v1/sessions/:id/state` | Get full session state |
+| `GET` | `/v1/sessions/:id/runtime-state` | Get runtime binding state |
 | `DELETE` | `/v1/sessions/:id` | Close session |
 
 </details>
 
 <details>
-<summary><strong>Workflows</strong></summary>
+<summary><strong>Workflows & Approvals</strong></summary>
 
 | Method | Endpoint | Description |
 |:---|:---|:---|
@@ -235,16 +370,23 @@ The daemon exposes a REST + WebSocket API on `localhost:43210`.
 </details>
 
 <details>
-<summary><strong>Other Endpoints</strong></summary>
+<summary><strong>Terminals, Dev Servers & System</strong></summary>
 
 | Method | Endpoint | Description |
 |:---|:---|:---|
 | `POST` | `/v1/terminals` | Start a PTY terminal |
+| `POST` | `/v1/terminals/:id/input` | Send input to terminal |
+| `DELETE` | `/v1/terminals/:id` | Stop terminal |
+| `POST` | `/v1/dev-servers` | Start dev server (npm/pnpm/yarn/bun) |
+| `DELETE` | `/v1/dev-servers/:id` | Stop dev server |
 | `POST` | `/v1/worktrees` | Create a git worktree |
+| `DELETE` | `/v1/worktrees/:id` | Remove a git worktree |
 | `GET` | `/v1/search?q=...` | Full-text search across sessions |
 | `GET` | `/v1/stats/:id` | Session token & tool stats |
 | `POST` | `/v1/runtime/update/check` | Check for runtime updates |
+| `POST` | `/v1/runtime/update/apply` | Apply runtime updates |
 | `GET` | `/health` | Health check (no auth required) |
+| `GET` | `/health/details` | Detailed health (uptime, connections, PID) |
 
 </details>
 
@@ -300,7 +442,7 @@ export AGENTPI_DAEMON_TOKEN="your-secret-token"
 
 ## Custom Themes
 
-Drop a YAML file into `~/Library/Application Support/AgentPi/themes/` — changes apply instantly via hot-reload.
+Drop a YAML file into `~/Library/Application Support/AgentPi/Themes/` — changes apply instantly via hot-reload.
 
 ```yaml
 name: My Theme
@@ -319,9 +461,19 @@ Built-in themes: **Claude** · **Codex** · **Bat** · **Xcode**
 
 ---
 
-## pi-mono Compatibility
+## Provider Compatibility
 
-AgentPi supports [pi-mono](https://github.com/badlogic/pi-mono) — an open-source AI agent toolkit by [@badlogic](https://github.com/badlogic). Monitor pi-mono sessions alongside Claude Code and Codex in one unified hub.
+AgentPi treats all providers as first-class citizens:
+
+| Provider | Session Monitoring | Batch Execution | Mobile Relay | Smart Orchestration |
+|:---|:---:|:---:|:---:|:---:|
+| **Claude Code** | &#10003; | &#10003; | &#10003; | &#10003; |
+| **Codex CLI** | &#10003; | &#10003; | &#10003; | — |
+| **pi-mono** | &#10003; | &#10003; | &#10003; | — |
+| **`happy` CLI** | — | &#10003; (fallback) | &#10003; (wrapper) | — |
+
+[pi-mono](https://github.com/badlogic/pi-mono) is an open-source AI agent toolkit by [@badlogic](https://github.com/badlogic).
+The `happy` CLI wrapper enables seamless cross-provider relay with intelligent command detection and automatic native fallback.
 
 ---
 
