@@ -34,23 +34,74 @@ public struct BatchTaskExecutionContext: Sendable {
 @Observable
 public final class BatchTaskRunStore {
   public static let shared = BatchTaskRunStore()
+  private static let maxRetainedOutputCharacters = 240_000
+  private static let trimTargetOutputCharacters = 180_000
 
   public private(set) var runs: [BatchTaskRun] = []
   private var contextsByRunId: [String: BatchTaskExecutionContext] = [:]
+  private var cancelRequestedRunIds: Set<String> = []
+  private var cancelledRunIds: Set<String> = []
+  private var outputCharacterCountsByRunId: [String: Int] = [:]
+  private var truncatedOutputCharacterCountsByRunId: [String: Int] = [:]
+  private var truncatedOutputRunIds: Set<String> = []
 
   public init() {}
 
   public func appendRun(_ run: BatchTaskRun, context: BatchTaskExecutionContext) {
+    removeRunMetadata(run.id)
     var next = runs
     next.insert(run, at: 0)
     runs = next
     contextsByRunId[run.id] = context
+    outputCharacterCountsByRunId[run.id] = run.output.reduce(0) { partial, chunk in
+      partial + chunk.text.count
+    }
   }
 
   public func appendOutput(runId: String, text: String, isError: Bool) {
     guard let index = runs.firstIndex(where: { $0.id == runId }) else { return }
+    // Ignore output for already-finished runs (race between cancel and pipe handlers)
+    guard runs[index].status == .running else { return }
+    guard !text.isEmpty else { return }
+
+    let (tailText, droppedFromChunk) = tailLimitedText(text, maxCharacters: Self.trimTargetOutputCharacters)
     var next = runs
-    next[index].output.append(BatchTaskOutputChunk(text: text, isError: isError))
+    if droppedFromChunk > 0 {
+      markOutputTruncated(runId: runId, droppedCharacters: droppedFromChunk)
+    }
+    guard !tailText.isEmpty else {
+      runs = next
+      return
+    }
+    next[index].output.append(BatchTaskOutputChunk(text: tailText, isError: isError))
+    var totalCharacters = outputCharacterCountsByRunId[runId, default: 0] + tailText.count
+
+    if totalCharacters > Self.maxRetainedOutputCharacters {
+      var charactersToDrop = totalCharacters - Self.trimTargetOutputCharacters
+      var droppedFromBuffer = 0
+
+      while charactersToDrop > 0, !next[index].output.isEmpty {
+        let firstChunkCount = next[index].output[0].text.count
+        if firstChunkCount <= charactersToDrop {
+          droppedFromBuffer += firstChunkCount
+          charactersToDrop -= firstChunkCount
+          next[index].output.removeFirst()
+          continue
+        }
+
+        let trimmed = String(next[index].output[0].text.dropFirst(charactersToDrop))
+        droppedFromBuffer += charactersToDrop
+        next[index].output[0].text = trimmed
+        charactersToDrop = 0
+      }
+
+      if droppedFromBuffer > 0 {
+        markOutputTruncated(runId: runId, droppedCharacters: droppedFromBuffer)
+      }
+      totalCharacters = max(0, totalCharacters - droppedFromBuffer)
+    }
+
+    outputCharacterCountsByRunId[runId] = totalCharacters
     runs = next
   }
 
@@ -64,20 +115,37 @@ public final class BatchTaskRunStore {
   public func markFinished(runId: String, exitCode: Int32) {
     guard let index = runs.firstIndex(where: { $0.id == runId }) else { return }
     guard runs[index].status == .running else { return }
+    let wasCancelRequested = cancelRequestedRunIds.remove(runId) != nil
+    if wasCancelRequested {
+      cancelledRunIds.insert(runId)
+    } else {
+      cancelledRunIds.remove(runId)
+    }
     var next = runs
     next[index].endedAt = Date()
     next[index].exitCode = exitCode
-    next[index].status = exitCode == 0 ? .succeeded : .failed
+    next[index].status = wasCancelRequested ? .failed : (exitCode == 0 ? .succeeded : .failed)
     runs = next
   }
 
   public func markFailedToStart(runId: String, message: String) {
     guard let index = runs.firstIndex(where: { $0.id == runId }) else { return }
+    cancelRequestedRunIds.remove(runId)
+    cancelledRunIds.remove(runId)
     var next = runs
     next[index].endedAt = Date()
     next[index].exitCode = -1
     next[index].status = .failed
-    next[index].output.append(BatchTaskOutputChunk(text: message, isError: true))
+    let (tailMessage, dropped) = tailLimitedText(message, maxCharacters: Self.trimTargetOutputCharacters)
+    if dropped > 0 {
+      markOutputTruncated(runId: runId, droppedCharacters: dropped)
+    }
+    if !tailMessage.isEmpty {
+      next[index].output.append(BatchTaskOutputChunk(text: tailMessage, isError: true))
+      outputCharacterCountsByRunId[runId] = next[index].output.reduce(0) { partial, chunk in
+        partial + chunk.text.count
+      }
+    }
     runs = next
   }
 
@@ -88,6 +156,63 @@ public final class BatchTaskRunStore {
   public func run(by runId: String) -> BatchTaskRun? {
     runs.first(where: { $0.id == runId })
   }
+
+  public func removeCompletedRuns() {
+    let completedIds = runs.filter { $0.status != .running }.map(\.id)
+    guard !completedIds.isEmpty else { return }
+    runs.removeAll { $0.status != .running }
+    for id in completedIds {
+      contextsByRunId.removeValue(forKey: id)
+      removeRunMetadata(id)
+    }
+  }
+
+  @discardableResult
+  public func markCancelRequested(runId: String) -> Bool {
+    guard let run = run(by: runId), run.status == .running else { return false }
+    return cancelRequestedRunIds.insert(runId).inserted
+  }
+
+  public func clearCancelRequested(runId: String) {
+    cancelRequestedRunIds.remove(runId)
+  }
+
+  public func isCancelRequested(runId: String) -> Bool {
+    cancelRequestedRunIds.contains(runId)
+  }
+
+  public func wasCancelled(runId: String) -> Bool {
+    cancelledRunIds.contains(runId)
+  }
+
+  public func isOutputTruncated(runId: String) -> Bool {
+    truncatedOutputRunIds.contains(runId)
+  }
+
+  public func truncatedOutputCharacterCount(runId: String) -> Int {
+    truncatedOutputCharacterCountsByRunId[runId, default: 0]
+  }
+
+  private func markOutputTruncated(runId: String, droppedCharacters: Int) {
+    guard droppedCharacters > 0 else { return }
+    truncatedOutputRunIds.insert(runId)
+    truncatedOutputCharacterCountsByRunId[runId, default: 0] += droppedCharacters
+  }
+
+  private func tailLimitedText(_ text: String, maxCharacters: Int) -> (String, Int) {
+    guard maxCharacters > 0 else { return ("", text.count) }
+    guard text.count > maxCharacters else { return (text, 0) }
+    let dropped = text.count - maxCharacters
+    return (String(text.suffix(maxCharacters)), dropped)
+  }
+
+  private func removeRunMetadata(_ runId: String) {
+    cancelRequestedRunIds.remove(runId)
+    cancelledRunIds.remove(runId)
+    outputCharacterCountsByRunId.removeValue(forKey: runId)
+    truncatedOutputCharacterCountsByRunId.removeValue(forKey: runId)
+    truncatedOutputRunIds.remove(runId)
+  }
 }
 
 @MainActor
@@ -96,6 +221,7 @@ public final class BatchTaskRunnerService {
 
   private let templateService: CommandTemplateService
   public let store: BatchTaskRunStore
+  private var pendingCancellationRunIds: Set<String> = []
 
   public init(
     templateService: CommandTemplateService,
@@ -192,6 +318,10 @@ public final class BatchTaskRunnerService {
       return run.id
     }
 
+    // Capture store/self for use inside Task.detached (avoids hardcoded .shared reference
+    // which would break dependency injection and unit testing with non-shared instances).
+    let capturedStore = store
+    let capturedSelf = self
     Task.detached(priority: .userInitiated) { [runId = run.id] in
       let process = Process()
       process.executableURL = URL(fileURLWithPath: executablePath)
@@ -211,7 +341,7 @@ public final class BatchTaskRunnerService {
         let text = String(decoding: data, as: UTF8.self)
         guard !text.isEmpty else { return }
         Task { @MainActor in
-          BatchTaskRunnerService.shared.store.appendOutput(runId: runId, text: text, isError: false)
+          capturedStore.appendOutput(runId: runId, text: text, isError: false)
         }
       }
 
@@ -221,26 +351,34 @@ public final class BatchTaskRunnerService {
         let text = String(decoding: data, as: UTF8.self)
         guard !text.isEmpty else { return }
         Task { @MainActor in
-          BatchTaskRunnerService.shared.store.appendOutput(runId: runId, text: text, isError: true)
+          capturedStore.appendOutput(runId: runId, text: text, isError: true)
         }
       }
 
       do {
         try process.run()
         await MainActor.run {
-          BatchTaskRunnerService.shared.store.markStarted(
+          capturedStore.markStarted(
             runId: runId,
             pid: process.processIdentifier
           )
+          if capturedSelf.pendingCancellationRunIds.remove(runId) != nil {
+            _ = capturedSelf.requestStopSignal(
+              runId: runId,
+              pid: process.processIdentifier,
+              queued: true
+            )
+          }
         }
 
         Task.detached(priority: .utility) {
           try? await Task.sleep(for: .seconds(20))
           await MainActor.run {
-            guard let current = BatchTaskRunnerService.shared.store.run(by: runId),
-              current.status == .running
+            guard let current = capturedStore.run(by: runId),
+              current.status == .running,
+              capturedStore.isCancelRequested(runId: runId) == false
             else { return }
-            BatchTaskRunnerService.shared.store.appendOutput(
+            capturedStore.appendOutput(
               runId: runId,
               text: "[AgentPi] Still running. If it seems stuck, use Stream template or Stop.\n",
               isError: false
@@ -250,7 +388,8 @@ public final class BatchTaskRunnerService {
         process.waitUntilExit()
       } catch {
         await MainActor.run {
-          BatchTaskRunnerService.shared.store.markFailedToStart(
+          capturedSelf.pendingCancellationRunIds.remove(runId)
+          capturedStore.markFailedToStart(
             runId: runId,
             message: "Failed to start process: \(error.localizedDescription)"
           )
@@ -258,10 +397,11 @@ public final class BatchTaskRunnerService {
         return
       }
 
+      // Detach pipe handlers before marking finished to prevent late output delivery
       stdoutPipe.fileHandleForReading.readabilityHandler = nil
       stderrPipe.fileHandleForReading.readabilityHandler = nil
       await MainActor.run {
-        BatchTaskRunnerService.shared.store.markFinished(runId: runId, exitCode: process.terminationStatus)
+        capturedStore.markFinished(runId: runId, exitCode: process.terminationStatus)
       }
     }
 
@@ -277,33 +417,154 @@ public final class BatchTaskRunnerService {
   @discardableResult
   public func cancel(runId: String) -> Bool {
     guard let run = store.run(by: runId), run.status == .running else { return false }
-    guard let pid = run.pid, pid > 0 else {
-      store.appendOutput(
-        runId: runId,
-        text: "[AgentPi] Cannot stop task: missing process id.\n",
-        isError: true
-      )
-      store.markFinished(runId: runId, exitCode: 130)
-      return false
+    if store.isCancelRequested(runId: runId) {
+      return true
     }
-
-    let result = kill(pid, SIGTERM)
-    if result == 0 {
+    guard store.markCancelRequested(runId: runId) else { return false }
+    store.appendOutput(
+      runId: runId,
+      text: "[AgentPi] Stop requested. Waiting for process termination...\n",
+      isError: false
+    )
+    guard let pid = run.pid, pid > 0 else {
+      pendingCancellationRunIds.insert(runId)
       store.appendOutput(
         runId: runId,
-        text: "[AgentPi] Stop signal sent.\n",
+        text: "[AgentPi] Task is still starting. Stop signal will be sent once the PID is ready.\n",
         isError: false
       )
-      store.markFinished(runId: runId, exitCode: 130)
       return true
     }
 
+    return requestStopSignal(runId: runId, pid: pid, queued: false)
+  }
+
+  @discardableResult
+  private func requestStopSignal(runId: String, pid: Int32, queued: Bool) -> Bool {
+    let stopResult = Self.sendSignal(SIGTERM, to: pid)
+    if stopResult.sent {
+      store.appendOutput(
+        runId: runId,
+        text: queued
+          ? "[AgentPi] Stop signal sent after process start.\n"
+          : "[AgentPi] Stop signal sent.\n",
+        isError: false
+      )
+      scheduleForceStopIfNeeded(runId: runId, pid: pid)
+      return true
+    }
+
+    if stopResult.errnoCode == ESRCH {
+      store.appendOutput(
+        runId: runId,
+        text: "[AgentPi] Process already exited while sending stop signal.\n",
+        isError: false
+      )
+      return true
+    }
+
+    pendingCancellationRunIds.remove(runId)
+    store.clearCancelRequested(runId: runId)
     store.appendOutput(
       runId: runId,
-      text: "[AgentPi] Failed to stop process (pid=\(pid)).\n",
+      text: "[AgentPi] Failed to stop process (pid=\(pid), errno=\(stopResult.errnoCode)).\n",
       isError: true
     )
     return false
+  }
+
+  private func scheduleForceStopIfNeeded(runId: String, pid: Int32) {
+    let capturedStore = store
+    Task.detached(priority: .utility) {
+      try? await Task.sleep(for: .seconds(2))
+      let shouldEscalate = await MainActor.run {
+        guard let current = capturedStore.run(by: runId),
+          current.status == .running,
+          current.pid == pid,
+          capturedStore.isCancelRequested(runId: runId)
+        else { return false }
+        return true
+      }
+      guard shouldEscalate else { return }
+      guard Self.isProcessAlive(pid: pid) else { return }
+
+      let forceResult = Self.sendSignal(SIGKILL, to: pid)
+      if forceResult.sent {
+        await MainActor.run {
+          guard let current = capturedStore.run(by: runId),
+            current.status == .running,
+            current.pid == pid
+          else { return }
+          capturedStore.appendOutput(
+            runId: runId,
+            text: "[AgentPi] Process did not stop after SIGTERM. Sent force stop (SIGKILL).\n",
+            isError: false
+          )
+        }
+
+        try? await Task.sleep(for: .milliseconds(700))
+        guard Self.isProcessAlive(pid: pid) else { return }
+        await MainActor.run {
+          guard let current = capturedStore.run(by: runId),
+            current.status == .running,
+            current.pid == pid
+          else { return }
+          capturedStore.appendOutput(
+            runId: runId,
+            text: "[AgentPi] Process is still alive after SIGKILL. It may have spawned unmanaged child processes.\n",
+            isError: true
+          )
+        }
+        return
+      }
+
+      if forceResult.errnoCode == ESRCH {
+        await MainActor.run {
+          capturedStore.appendOutput(
+            runId: runId,
+            text: "[AgentPi] Process exited while escalating stop.\n",
+            isError: false
+          )
+        }
+        return
+      }
+
+      await MainActor.run {
+        guard let current = capturedStore.run(by: runId),
+          current.status == .running,
+          current.pid == pid
+        else { return }
+        capturedStore.appendOutput(
+          runId: runId,
+          text: "[AgentPi] Failed to force stop process (pid=\(pid), errno=\(forceResult.errnoCode)).\n",
+          isError: true
+        )
+        capturedStore.clearCancelRequested(runId: runId)
+      }
+    }
+  }
+
+  private nonisolated static func sendSignal(_ signal: Int32, to pid: Int32) -> (sent: Bool, errnoCode: Int32) {
+    if killpg(pid, signal) == 0 {
+      return (true, 0)
+    }
+    let groupErrno = errno
+    if kill(pid, signal) == 0 {
+      return (true, 0)
+    }
+    let processErrno = errno
+    if processErrno == ESRCH || groupErrno == ESRCH {
+      return (false, ESRCH)
+    }
+    return (false, processErrno)
+  }
+
+  private nonisolated static func isProcessAlive(pid: Int32) -> Bool {
+    guard pid > 0 else { return false }
+    if kill(pid, 0) == 0 {
+      return true
+    }
+    return errno == EPERM
   }
 
   private nonisolated static func buildEnvironment(additionalPaths: [String]) -> [String: String] {
