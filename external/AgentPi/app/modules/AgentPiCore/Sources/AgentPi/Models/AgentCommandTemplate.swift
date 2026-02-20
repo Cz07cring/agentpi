@@ -106,6 +106,7 @@ public struct BatchTaskRun: Identifiable, Codable, Equatable, Sendable {
   public var templateName: String
   public var commandLine: String
   public var projectPath: String
+  public var pid: Int32?
   public var startedAt: Date
   public var endedAt: Date?
   public var exitCode: Int32?
@@ -119,6 +120,7 @@ public struct BatchTaskRun: Identifiable, Codable, Equatable, Sendable {
     templateName: String,
     commandLine: String,
     projectPath: String,
+    pid: Int32? = nil,
     startedAt: Date = Date(),
     endedAt: Date? = nil,
     exitCode: Int32? = nil,
@@ -131,6 +133,7 @@ public struct BatchTaskRun: Identifiable, Codable, Equatable, Sendable {
     self.templateName = templateName
     self.commandLine = commandLine
     self.projectPath = projectPath
+    self.pid = pid
     self.startedAt = startedAt
     self.endedAt = endedAt
     self.exitCode = exitCode

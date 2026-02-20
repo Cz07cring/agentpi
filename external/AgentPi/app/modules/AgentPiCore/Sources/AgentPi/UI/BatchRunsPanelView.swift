@@ -122,11 +122,23 @@ public struct BatchRunsPanelView: View {
   }
 
   private func runDetail(_ run: BatchTaskRun) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
+    let visibleText = visibleOutputText(for: run)
+    let hasVisibleText = !visibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let outputBottomAnchor = "batch-output-bottom-\(run.id)"
+
+    return VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 8) {
         Text(run.templateName)
           .font(.system(size: 12, weight: .semibold))
         Spacer(minLength: 4)
+        if run.status == .running {
+          Button(L10n.t("batch_runs.action.stop", "Stop")) {
+            _ = runner.cancel(runId: run.id)
+          }
+          .buttonStyle(.borderedProminent)
+          .controlSize(.small)
+          .tint(.red)
+        }
         Button(L10n.t("batch_runs.action.rerun", "Rerun")) {
           _ = runner.rerun(runId: run.id)
         }
@@ -145,11 +157,50 @@ public struct BatchRunsPanelView: View {
         .foregroundColor(.secondary)
         .textSelection(.enabled)
 
-      ScrollView {
-        Text(run.output.map(\.text).joined())
+      ScrollViewReader { proxy in
+        ScrollView {
+          Group {
+            if !hasVisibleText {
+              TimelineView(.periodic(from: Date(), by: 1)) { context in
+                VStack(alignment: .leading, spacing: 6) {
+                  Text(L10n.t("batch_runs.output.waiting", "Task is running, waiting for CLI output..."))
+                  Text(
+                    L10n.f(
+                      "batch_runs.output.elapsed_seconds",
+                      "Elapsed: %ds. You can click Stop to cancel.",
+                      elapsedSeconds(for: run, now: context.date)
+                    )
+                  )
+                    .foregroundColor(.secondary)
+                  if !run.output.isEmpty {
+                    Text(
+                      L10n.f(
+                        "batch_runs.output.chunks_received",
+                        "Received %d output chunk(s), but no visible text yet.",
+                        run.output.count
+                      )
+                    )
+                      .foregroundColor(.secondary)
+                  }
+                }
+              }
+            } else {
+              Text(visibleText)
+                .id(outputBottomAnchor)
+            }
+          }
           .font(.system(size: 11, design: .monospaced))
           .frame(maxWidth: .infinity, alignment: .topLeading)
           .textSelection(.enabled)
+        }
+        .onAppear {
+          guard hasVisibleText else { return }
+          proxy.scrollTo(outputBottomAnchor, anchor: .bottom)
+        }
+        .onChange(of: run.output.count) { _, _ in
+          guard hasVisibleText else { return }
+          proxy.scrollTo(outputBottomAnchor, anchor: .bottom)
+        }
       }
       .frame(minHeight: 120, maxHeight: .infinity)
       .padding(8)
@@ -176,6 +227,9 @@ public struct BatchRunsPanelView: View {
     case .succeeded:
       return L10n.t("batch_runs.status.success", "Success")
     case .failed:
+      if run.exitCode == 130 {
+        return L10n.t("batch_runs.status.cancelled", "Cancelled")
+      }
       let code = run.exitCode ?? -1
       return L10n.f("batch_runs.status.failed_code", "Failed (%d)", code)
     }
@@ -185,6 +239,54 @@ public struct BatchRunsPanelView: View {
     let formatter = DateFormatter()
     formatter.dateFormat = "HH:mm:ss"
     return formatter.string(from: date)
+  }
+
+  private func elapsedSeconds(for run: BatchTaskRun, now: Date = Date()) -> Int {
+    let end = run.endedAt ?? now
+    return max(0, Int(end.timeIntervalSince(run.startedAt)))
+  }
+
+  private func visibleOutputText(for run: BatchTaskRun) -> String {
+    let raw = run.output.map(\.text).joined()
+    guard !raw.isEmpty else { return "" }
+
+    // Normalize control-heavy terminal output so the panel doesn't appear blank.
+    let strippedAnsi = raw
+      .replacingOccurrences(of: #"\u{001B}\[[0-?]*[ -/]*[@-~]"#, with: "", options: .regularExpression)
+      .replacingOccurrences(of: #"\u{001B}\][^\u{0007}\u{001B}]*(\u{0007}|\u{001B}\\)"#, with: "", options: .regularExpression)
+
+    let normalizedControls = strippedAnsi
+      .replacingOccurrences(of: "\r\n", with: "\n")
+      .replacingOccurrences(of: "\r", with: "\n")
+      .replacingOccurrences(of: "\u{0008}", with: "")
+      .replacingOccurrences(of: "\u{001B}", with: "")
+
+    let lines = normalizedControls.components(separatedBy: "\n")
+    var visibleLines: [String] = []
+    var started = false
+    var blankStreak = 0
+
+    for line in lines {
+      let isBlank = line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      if !started {
+        if isBlank { continue }
+        started = true
+      }
+
+      if isBlank {
+        blankStreak += 1
+        if blankStreak > 2 { continue }
+      } else {
+        blankStreak = 0
+      }
+      visibleLines.append(line)
+    }
+
+    if visibleLines.isEmpty {
+      return normalizedControls.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    return visibleLines.joined(separator: "\n")
   }
 
   private func copyToClipboard(_ text: String) {

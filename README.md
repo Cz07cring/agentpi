@@ -65,8 +65,9 @@ Powered by the [`happy`](#mobile-relay--happy-cli-1) CLI wrapper with intelligen
 
 ### Batch Task Runner
 Run non-interactive one-off commands from configurable templates.
-Real-time stdout/stderr streaming, stop/rerun controls, elapsed time tracking.
-CI-safe execution with automatic `happy` relay fallback.
+Real-time stdout/stderr streaming with smart ANSI stripping, stop/rerun controls, elapsed time tracking, and auto-scroll.
+One-click **Stop** button sends SIGTERM; 20-second watchdog prevents "frozen UI" for buffered-output CLIs.
+CI-safe execution (`CI=1`, `GIT_TERMINAL_PROMPT=0`) with automatic `happy` relay fallback.
 
 </td>
 <td width="50%" valign="top">
@@ -285,10 +286,14 @@ Create custom templates, reorder them, and set per-provider defaults from **Sett
 
 The batch runner executes non-interactive commands defined by `batch_run` templates. Unlike interactive sessions, batch tasks run as headless subprocesses with piped I/O.
 
-- **Real-time streaming** — stdout and stderr are captured and displayed live in the Batch Runs panel
-- **Process management** — each task tracks its PID; stop sends SIGTERM, rerun re-launches from the same template
+- **Real-time streaming** — stdout and stderr are captured and displayed live in the Batch Runs panel with smart ANSI/control-sequence stripping for clean output
+- **Stop & Cancel** — one-click **Stop** button sends SIGTERM to the running process; cancelled tasks show "Cancelled" status (exit code 130) instead of generic failure
+- **Watchdog timer** — if no visible output appears within 20 seconds, a helpful hint is displayed so the UI never looks frozen
+- **Auto-scroll** — output panel automatically scrolls to the latest line as new data arrives
+- **Waiting state** — when CLI output is buffered (e.g. `claude -p` in non-stream mode), the panel shows a live elapsed-time counter and chunk count
+- **Process lifecycle** — each task captures its PID immediately after launch; rerun re-launches from the same template and context
 - **`happy` auto-detection** — if a `happy` relay command is used as a batch template, AgentPi automatically falls back to the native CLI for local execution
-- **CI environment** — batch tasks run with `CI=1` and `GIT_TERMINAL_PROMPT=0` to prevent interactive prompts from blocking execution
+- **CI-safe environment** — batch tasks run with `CI=1`, `GIT_TERMINAL_PROMPT=0`, and `GIT_ASKPASS=/usr/bin/false` to prevent interactive prompts from blocking headless execution
 
 ---
 

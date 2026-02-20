@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Darwin
 
 public struct BatchTaskExecutionContext: Sendable {
   public var provider: SessionProviderKind
@@ -40,32 +41,52 @@ public final class BatchTaskRunStore {
   public init() {}
 
   public func appendRun(_ run: BatchTaskRun, context: BatchTaskExecutionContext) {
-    runs.insert(run, at: 0)
+    var next = runs
+    next.insert(run, at: 0)
+    runs = next
     contextsByRunId[run.id] = context
   }
 
   public func appendOutput(runId: String, text: String, isError: Bool) {
     guard let index = runs.firstIndex(where: { $0.id == runId }) else { return }
-    runs[index].output.append(BatchTaskOutputChunk(text: text, isError: isError))
+    var next = runs
+    next[index].output.append(BatchTaskOutputChunk(text: text, isError: isError))
+    runs = next
+  }
+
+  public func markStarted(runId: String, pid: Int32) {
+    guard let index = runs.firstIndex(where: { $0.id == runId }) else { return }
+    var next = runs
+    next[index].pid = pid
+    runs = next
   }
 
   public func markFinished(runId: String, exitCode: Int32) {
     guard let index = runs.firstIndex(where: { $0.id == runId }) else { return }
-    runs[index].endedAt = Date()
-    runs[index].exitCode = exitCode
-    runs[index].status = exitCode == 0 ? .succeeded : .failed
+    guard runs[index].status == .running else { return }
+    var next = runs
+    next[index].endedAt = Date()
+    next[index].exitCode = exitCode
+    next[index].status = exitCode == 0 ? .succeeded : .failed
+    runs = next
   }
 
   public func markFailedToStart(runId: String, message: String) {
     guard let index = runs.firstIndex(where: { $0.id == runId }) else { return }
-    runs[index].endedAt = Date()
-    runs[index].exitCode = -1
-    runs[index].status = .failed
-    runs[index].output.append(BatchTaskOutputChunk(text: message, isError: true))
+    var next = runs
+    next[index].endedAt = Date()
+    next[index].exitCode = -1
+    next[index].status = .failed
+    next[index].output.append(BatchTaskOutputChunk(text: message, isError: true))
+    runs = next
   }
 
   public func context(for runId: String) -> BatchTaskExecutionContext? {
     contextsByRunId[runId]
+  }
+
+  public func run(by runId: String) -> BatchTaskRun? {
+    runs.first(where: { $0.id == runId })
   }
 }
 
@@ -149,6 +170,11 @@ public final class BatchTaskRunnerService {
       projectPath: context.projectPath
     )
     store.appendRun(run, context: context)
+    store.appendOutput(
+      runId: run.id,
+      text: "[AgentPi] Batch task started. Some templates (like Claude Batch Fast) may output only when finished.\n",
+      isError: false
+    )
 
     if didNormalizeHappyRelay {
       store.appendOutput(
@@ -172,6 +198,7 @@ public final class BatchTaskRunnerService {
       process.arguments = renderedArgs
       process.currentDirectoryURL = URL(fileURLWithPath: context.projectPath)
       process.environment = Self.buildEnvironment(additionalPaths: normalizedConfig.additionalPaths)
+      process.standardInput = FileHandle.nullDevice
 
       let stdoutPipe = Pipe()
       let stderrPipe = Pipe()
@@ -180,7 +207,9 @@ public final class BatchTaskRunnerService {
 
       stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
         let data = handle.availableData
-        guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+        guard !data.isEmpty else { return }
+        let text = String(decoding: data, as: UTF8.self)
+        guard !text.isEmpty else { return }
         Task { @MainActor in
           BatchTaskRunnerService.shared.store.appendOutput(runId: runId, text: text, isError: false)
         }
@@ -188,7 +217,9 @@ public final class BatchTaskRunnerService {
 
       stderrPipe.fileHandleForReading.readabilityHandler = { handle in
         let data = handle.availableData
-        guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+        guard !data.isEmpty else { return }
+        let text = String(decoding: data, as: UTF8.self)
+        guard !text.isEmpty else { return }
         Task { @MainActor in
           BatchTaskRunnerService.shared.store.appendOutput(runId: runId, text: text, isError: true)
         }
@@ -196,6 +227,26 @@ public final class BatchTaskRunnerService {
 
       do {
         try process.run()
+        await MainActor.run {
+          BatchTaskRunnerService.shared.store.markStarted(
+            runId: runId,
+            pid: process.processIdentifier
+          )
+        }
+
+        Task.detached(priority: .utility) {
+          try? await Task.sleep(for: .seconds(20))
+          await MainActor.run {
+            guard let current = BatchTaskRunnerService.shared.store.run(by: runId),
+              current.status == .running
+            else { return }
+            BatchTaskRunnerService.shared.store.appendOutput(
+              runId: runId,
+              text: "[AgentPi] Still running. If it seems stuck, use Stream template or Stop.\n",
+              isError: false
+            )
+          }
+        }
         process.waitUntilExit()
       } catch {
         await MainActor.run {
@@ -223,6 +274,38 @@ public final class BatchTaskRunnerService {
     return run(context: context)
   }
 
+  @discardableResult
+  public func cancel(runId: String) -> Bool {
+    guard let run = store.run(by: runId), run.status == .running else { return false }
+    guard let pid = run.pid, pid > 0 else {
+      store.appendOutput(
+        runId: runId,
+        text: "[AgentPi] Cannot stop task: missing process id.\n",
+        isError: true
+      )
+      store.markFinished(runId: runId, exitCode: 130)
+      return false
+    }
+
+    let result = kill(pid, SIGTERM)
+    if result == 0 {
+      store.appendOutput(
+        runId: runId,
+        text: "[AgentPi] Stop signal sent.\n",
+        isError: false
+      )
+      store.markFinished(runId: runId, exitCode: 130)
+      return true
+    }
+
+    store.appendOutput(
+      runId: runId,
+      text: "[AgentPi] Failed to stop process (pid=\(pid)).\n",
+      isError: true
+    )
+    return false
+  }
+
   private nonisolated static func buildEnvironment(additionalPaths: [String]) -> [String: String] {
     var environment = ProcessInfo.processInfo.environment
     let paths = additionalPaths + [
@@ -247,6 +330,11 @@ public final class BatchTaskRunnerService {
     } else {
       environment["PATH"] = pathString
     }
+    // Force non-interactive behavior so batch tasks fail fast instead of hanging
+    // on git/password prompts that have no TTY in this execution mode.
+    environment["CI"] = "1"
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    environment["GIT_ASKPASS"] = "/usr/bin/false"
     ProxyEnvironment.apply(to: &environment)
     return environment
   }
